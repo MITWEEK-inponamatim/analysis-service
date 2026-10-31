@@ -28,9 +28,9 @@ async def inspect_website(url: str, scan_id: str, user_id: str) -> dict:
                 import cloudinary.uploader
                 
                 # Configure Cloudinary from URL
-                cloudinary.config(cloudinary_url=cloudinary_url)
+                cloud_name = os.getenv("CLOUDINARY_CLOUD_NAME", "wbthmsn0")
+                cloudinary.config(cloudinary_url=cloudinary_url, cloud_name=cloud_name)
                 
-                # Upload with public_id for organized storage
                 public_id = f"threatlens/scans/{user_id}/{scan_id}"
                 
                 # Synchronous upload (Cloudinary SDK doesn't have async)
@@ -42,8 +42,6 @@ async def inspect_website(url: str, scan_id: str, user_id: str) -> dict:
                     lambda: cloudinary.uploader.upload(
                         f"data:image/png;base64,{screenshot}",
                         public_id=public_id,
-                        folder="threatlens/scans",
-                        resource_type="image",
                         overwrite=True,
                     )
                 )
