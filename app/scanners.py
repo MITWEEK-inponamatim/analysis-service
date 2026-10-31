@@ -127,14 +127,15 @@ async def scan_url_pipeline(scan_id: str, url: str, user_id: str, checkpointer_u
     report = assess(scan_id, "url", findings, checks, unavailable, usage)
     report.artifacts.update(artifacts)
     
-    # Save evidence to database
+    # Save evidence to database; keep screenshots in Cloudinary, never JSONB.
     threat_intel_data = {
         "ic4": [f.dict() for f in findings if f.source == "ic4"],
         "malwarebytes": [f.dict() for f in findings if f.source == "malwarebytes"],
         "safe_browsing": [f.dict() for f in findings if f.source == "safe_browsing"],
         "virustotal": [f.dict() for f in findings if f.source == "virustotal"],
     }
-    await save_scan_evidence(scan_id, user_id, threat_intel_data, recon_data, browser_evidence)
+    browser_data = {key: value for key, value in browser_evidence.items() if key != "screenshot_base64"}
+    await save_scan_evidence(scan_id, user_id, threat_intel_data, recon_data, browser_data)
     if inspect_browser:
         if "browser_inspection" not in checks:
             report.limitations.append("Browser inspection tidak tersedia; hasil tidak cukup untuk menyimpulkan aman.")
