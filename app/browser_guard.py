@@ -56,12 +56,22 @@ def resolve_public(host: str, port: int) -> list[str]:
         except OSError as exc:
             raise UnsafeTarget("dns_resolution_failed") from exc
         addresses = [ipaddress.ip_address(record[4][0].split("%", 1)[0]) for record in records]
-    if not addresses or any(
+    
+    # Normalize IPv4-mapped IPv6 (::ffff:x.x.x.x) to IPv4 for validation
+    normalized = []
+    for addr in addresses:
+        if addr.version == 6 and addr.ipv4_mapped:
+            # Extract embedded IPv4 from ::ffff:x.x.x.x
+            normalized.append(addr.ipv4_mapped)
+        else:
+            normalized.append(addr)
+    
+    if not normalized or any(
         not address.is_global or address.is_reserved or address.is_multicast
         or address.is_unspecified or address.is_loopback or address.is_link_local
         or address.is_private or getattr(address, "is_site_local", False)
         or any(address.version == network.version and address in network for network in NON_PUBLIC_NETWORKS)
-        for address in addresses
+        for address in normalized
     ):
         raise UnsafeTarget("non_public_address")
     return sorted({str(address) for address in addresses}, key=lambda value: (ipaddress.ip_address(value).version, ipaddress.ip_address(value).packed))

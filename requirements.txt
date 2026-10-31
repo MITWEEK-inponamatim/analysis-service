@@ -10,3 +10,6 @@ langgraph-checkpoint-postgres>=2,<4
 psycopg[binary,pool]>=3.2,<4
 # Phone scanner normalisation (E.164, region, line type) runs in the API process.
 phonenumbers>=8.13,<10
+# Deep recon: async DNS queries
+cloudinary>=1.41,<2
+aiodns>=3.2,<4

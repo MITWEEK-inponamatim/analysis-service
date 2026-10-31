@@ -152,15 +152,70 @@ async def inspect(request: InspectRequest, x_service_key: str | None = Header(de
                 except Exception:
                     pass
                 try:
-                    forms = await page.locator("form").evaluate_all("""forms => forms.slice(0, 30).map(form => ({
-                        method: (form.method || 'get').toUpperCase(),
-                        action: form.action,
-                        password_fields: form.querySelectorAll('input[type=password]').length,
-                        input_types: Array.from(form.querySelectorAll('input')).slice(0, 20).map(input => input.type || 'text')
-                    }))""")
-                    forms = [{**item, "action": safe_evidence_url(item.get("action", "")), "password_fields": min(20, max(0, int(item.get("password_fields", 0)))), "input_types": item.get("input_types", [])[:20]} for item in forms]
+                    forms = await page.locator("form").evaluate_all("""forms => forms.slice(0, 30).map(form => {
+                        const inputs = Array.from(form.querySelectorAll('input')).slice(0, 20);
+                        return {
+                            method: (form.method || 'get').toUpperCase(),
+                            action: form.action,
+                            password_fields: form.querySelectorAll('input[type=password]').length,
+                            input_types: inputs.map(input => input.type || 'text'),
+                            input_names: inputs.map(input => input.name || input.id || ''),
+                            input_placeholders: inputs.map(input => input.placeholder || ''),
+                            has_email: inputs.some(input => input.type === 'email' || input.name?.includes('email') || input.id?.includes('email')),
+                            has_username: inputs.some(input => input.name?.includes('user') || input.name?.includes('login') || input.id?.includes('user')),
+                            has_otp: inputs.some(input => input.name?.includes('otp') || input.name?.includes('code') || input.placeholder?.includes('code')),
+                        };
+                    })""")
+                    forms = [{
+                        **item,
+                        "action": safe_evidence_url(item.get("action", "")),
+                        "password_fields": min(20, max(0, int(item.get("password_fields", 0)))),
+                        "input_types": item.get("input_types", [])[:20],
+                        "input_names": item.get("input_names", [])[:20],
+                        "input_placeholders": item.get("input_placeholders", [])[:20],
+                        "has_email": bool(item.get("has_email")),
+                        "has_username": bool(item.get("has_username")),
+                        "has_otp": bool(item.get("has_otp")),
+                    } for item in forms]
                 except Exception:
                     forms = []
+                # JavaScript obfuscation detection
+                js_obfuscation = {"detected": False, "patterns": []}
+                try:
+                    js_analysis = await page.evaluate("""() => {
+                        const scripts = Array.from(document.querySelectorAll('script'));
+                        const inlineScripts = scripts.filter(s => !s.src && s.textContent).map(s => s.textContent);
+                        const allScriptText = inlineScripts.join('\\n');
+                        
+                        const patterns = {
+                            hex_escape_run: /(?:\\\\x[0-9a-fA-F]{2}){10,}/.test(allScriptText),
+                            unicode_escape: /(?:\\\\u[0-9a-fA-F]{4}){8,}/.test(allScriptText),
+                            eval_usage: /\\beval\\s*\\(/.test(allScriptText),
+                            function_constructor: /Function\\s*\\(/.test(allScriptText),
+                            base64_large: /(?:[A-Za-z0-9+/]{100,}={0,2})/.test(allScriptText),
+                            string_concat: /(?:["'][^"']{1,3}["']\\s*\\+\\s*){5,}/.test(allScriptText),
+                            char_code: /String\\.fromCharCode/.test(allScriptText),
+                            obfuscated_vars: /\\b(_0x[a-f0-9]{4,}|_$|__$|___$)\\b/.test(allScriptText),
+                        };
+                        
+                        const detected = Object.values(patterns).some(v => v);
+                        const matched = Object.keys(patterns).filter(k => patterns[k]);
+                        
+                        return {
+                            detected: detected,
+                            patterns: matched,
+                            inline_script_count: inlineScripts.length,
+                            total_script_length: allScriptText.length
+                        };
+                    }""")
+                    js_obfuscation = {
+                        "detected": bool(js_analysis.get("detected")),
+                        "patterns": js_analysis.get("patterns", [])[:10],
+                        "inline_script_count": min(100, js_analysis.get("inline_script_count", 0)),
+                        "total_script_length": min(1000000, js_analysis.get("total_script_length", 0)),
+                    }
+                except Exception:
+                    pass
                 try:
                     data = await page.screenshot(type="png", full_page=False, animations="disabled", timeout=3000)
                     if len(data) <= MAX_SCREENSHOT_BYTES:
@@ -198,6 +253,7 @@ async def inspect(request: InspectRequest, x_service_key: str | None = Header(de
         "failed_requests": failed_requests,
         "blocked_methods": blocked_methods[:100],
         "ssrf_blocked": bool(ssrf_attempts or failed_requests),
+        "js_obfuscation": js_obfuscation,
         "screenshot_base64": screenshot,
         "error": failure,
     }
