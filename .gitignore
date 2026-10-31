@@ -1,0 +1,9 @@
+.env
+.env.*
+!.env.example
+!.env.browser.example
+!.env.worker.example
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]

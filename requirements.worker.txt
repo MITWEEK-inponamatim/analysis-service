@@ -1,0 +1,8 @@
+# Isolated file-analysis worker. Kept separate from the API requirements so the API image
+# stays small and never needs image/APK parsing libraries.
+fastapi>=0.115,<1
+uvicorn[standard]>=0.34,<1
+pydantic>=2.10,<3
+pillow>=11,<13
+pytesseract>=0.3.13,<1
+androguard>=4.1,<5
