@@ -1,4 +1,4 @@
-import time
+from .evidence_storage import save_scan_evidence
 from typing import Any
 
 from .agent import run_agent
@@ -121,10 +121,20 @@ async def scan_url_pipeline(scan_id: str, url: str, user_id: str, checkpointer_u
         recon_data = recon_result.get("raw_data", {})
     usage = default_usage()
     artifacts = {"screenshot_path": None, "redirect_chain": [], "recon": recon_data}
+    browser_evidence = {}
     if inspect_browser:
-        await _browser_stage(scan_id, url, user_id, findings, checks, unavailable, usage, artifacts)
+        browser_evidence = await _browser_stage(scan_id, url, user_id, findings, checks, unavailable, usage, artifacts)
     report = assess(scan_id, "url", findings, checks, unavailable, usage)
     report.artifacts.update(artifacts)
+    
+    # Save evidence to database
+    threat_intel_data = {
+        "ic4": [f.dict() for f in findings if f.source == "ic4"],
+        "malwarebytes": [f.dict() for f in findings if f.source == "malwarebytes"],
+        "safe_browsing": [f.dict() for f in findings if f.source == "safe_browsing"],
+        "virustotal": [f.dict() for f in findings if f.source == "virustotal"],
+    }
+    await save_scan_evidence(scan_id, user_id, threat_intel_data, recon_data, browser_evidence)
     if inspect_browser:
         if "browser_inspection" not in checks:
             report.limitations.append("Browser inspection tidak tersedia; hasil tidak cukup untuk menyimpulkan aman.")
@@ -137,7 +147,7 @@ async def scan_url_pipeline(scan_id: str, url: str, user_id: str, checkpointer_u
     return report
 
 
-async def _browser_stage(scan_id, url, user_id, findings, checks, unavailable, usage, artifacts) -> None:
+async def _browser_stage(scan_id, url, user_id, findings, checks, unavailable, usage, artifacts) -> dict:
     from urllib.parse import urlsplit
 
     from .browser_client import inspect_website
@@ -146,7 +156,7 @@ async def _browser_stage(scan_id, url, user_id, findings, checks, unavailable, u
         evidence = await inspect_website(url, scan_id, user_id)
     except Exception:
         unavailable.append("browser_inspection")
-        return
+        return {}
     checks.append("browser_inspection")
     artifacts.update(screenshot_path=evidence.get("screenshot_path"), redirect_chain=evidence.get("redirect_chain", []))
     artifacts["final_url"] = evidence.get("final_url")
@@ -155,7 +165,7 @@ async def _browser_stage(scan_id, url, user_id, findings, checks, unavailable, u
     if evidence.get("error"):
         unavailable.append("browser_navigation")
         checks.append("ssrf_guard")
-        return
+        return evidence
     original_host = (urlsplit(evidence.get("final_url") or url).hostname or "").casefold().rstrip(".")
     form_actions: list[str] = []
     for form in evidence.get("forms", []):
@@ -218,7 +228,7 @@ async def _browser_stage(scan_id, url, user_id, findings, checks, unavailable, u
     if result is None:
         if "llm_analysis" not in unavailable:
             unavailable.append("llm_analysis")
-        return
+        return evidence
     extend_unique(unavailable, result.unavailable or [])
     if result.usage.get("status") == "completed":
         checks.append("llm_analysis")
@@ -227,6 +237,7 @@ async def _browser_stage(scan_id, url, user_id, findings, checks, unavailable, u
         checks.append("llm_tool_calls")
     for item in result.findings:
         findings.append(finding(item.indicator, "llm_analysis", item.severity, confidence=item.confidence))
+    return evidence
 
 
 async def scan_url(scan_id: str, url: str, user_id: str = "00000000-0000-0000-0000-000000000000"):
