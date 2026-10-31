@@ -1,7 +1,6 @@
 """Whitelisted tools the LLM may call (handoff 7.3).
 
 Every tool receives an identifier (``scan_id`` / ``file_id``), never a path or an arbitrary
-URL, and all arguments are validated here — not by the prompt. Tools read evidence that the
 deterministic pipeline already collected, so the model cannot expand its own reach.
 """
 
@@ -16,7 +15,7 @@ from urllib.parse import urlsplit
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-from . import exa, reputation
+from . import exa, ic4, malwarebytes, reputation
 from .heuristics import MAX_MESSAGE_CHARS, message_terms
 from .phone_scanner import fetch_reports, normalize_number
 
@@ -112,7 +111,7 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
             findings: list[dict[str, Any]] = []
             checks: list[str] = []
             unavailable: list[str] = []
-            for name, operation in (("safe_browsing", reputation.safe_browsing), ("virustotal", reputation.virustotal)):
+            for name, operation in (("ic4", ic4.ic4_lookup), ("malwarebytes", malwarebytes.malwarebytes_lookup), ("safe_browsing", reputation.safe_browsing), ("virustotal", reputation.virustotal)):
                 result = await operation(url)
                 if result is None:
                     unavailable.append(name)
@@ -120,7 +119,6 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
                     checks.append(name)
                     findings.extend({"indicator": item.indicator, "severity": item.severity, "source": item.source} for item in result)
             cached = {"available": bool(checks), "checks_run": checks, "checks_unavailable": unavailable, "findings": findings}
-            context.url_checks[url] = cached
         return _dump(cached)
 
     async def inspect_website(scan_id: str) -> str:

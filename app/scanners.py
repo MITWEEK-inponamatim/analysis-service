@@ -70,6 +70,9 @@ async def scan_message(scan_id: str, text: str):
 async def scan_url_pipeline(scan_id: str, url: str, user_id: str, checkpointer_unavailable: bool = False, validation_result: bool | None = None, inspect_browser: bool = True):
     from .browser_guard import UnsafeTarget, validate_target
     from .reputation import safe_browsing, virustotal
+    from .ic4 import ic4_lookup
+    from .malwarebytes import malwarebytes_lookup
+    from .recon import deep_recon
 
     findings = []
     if validation_result is None:
@@ -99,15 +102,25 @@ async def scan_url_pipeline(scan_id: str, url: str, user_id: str, checkpointer_u
     checks = ["url_syntax", "brand_guard"]
     if checkpointer_unavailable:
         unavailable.append("langgraph_checkpointer")
-    for name, operation in (("safe_browsing", safe_browsing), ("virustotal", virustotal)):
+    for name, operation in (("ic4", ic4_lookup), ("malwarebytes", malwarebytes_lookup), ("safe_browsing", safe_browsing), ("virustotal", virustotal)):
         result = await operation(url)
         if result is None:
             unavailable.append(name)
         else:
             checks.append(name)
             findings.extend(result)
+    # Deep recon: skip if critical/high threat found (save time)
+    critical_or_high = any(f.severity in ("critical", "high") for f in findings)
+    recon_data = {}
+    if not critical_or_high:
+        recon_result = await deep_recon(url)
+        findings.extend(recon_result["findings"])
+        checks.extend(recon_result["checks"])
+        unavailable.extend(recon_result["unavailable"])
+        # Store raw recon data in artifacts for audit/debugging
+        recon_data = recon_result.get("raw_data", {})
     usage = default_usage()
-    artifacts = {"screenshot_path": None, "redirect_chain": []}
+    artifacts = {"screenshot_path": None, "redirect_chain": [], "recon": recon_data}
     if inspect_browser:
         await _browser_stage(scan_id, url, user_id, findings, checks, unavailable, usage, artifacts)
     report = assess(scan_id, "url", findings, checks, unavailable, usage)
@@ -168,6 +181,22 @@ async def _browser_stage(scan_id, url, user_id, findings, checks, unavailable, u
         findings.append(finding("Halaman memuat domain eksternal.", "browser_inspection", "info", {"domains": domains[:30]}))
     if evidence.get("ssrf_blocked"):
         findings.append(finding("Halaman mencoba mengakses alamat jaringan non-publik; permintaan diblokir.", "ssrf_guard", "high", {"blocked_request_count": len(evidence.get("failed_requests", [])) + len(evidence.get("blocked_requests", []))}))
+    # JavaScript obfuscation detection
+    js_obf = evidence.get("js_obfuscation", {})
+    if js_obf.get("detected"):
+        patterns = js_obf.get("patterns", [])
+        pattern_desc = ", ".join(patterns[:5])
+        findings.append(
+            finding(
+                f"JavaScript terdeteksi menggunakan obfuscation ({pattern_desc}); sering dipakai malware untuk sembunyikan kode berbahaya.",
+                "browser_inspection",
+                "medium",
+                {"patterns": patterns[:10], "inline_scripts": js_obf.get("inline_script_count", 0)},
+            )
+        )
+    # Store JS obfuscation data in artifacts
+    if js_obf:
+        artifacts["js_obfuscation"] = js_obf
 
     context = ToolContext(
         scan_id=scan_id, user_id=user_id, kind="url",

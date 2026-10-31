@@ -49,6 +49,15 @@ async def safe_browsing(url: str) -> list[Finding] | None:
 
 
 async def virustotal(url: str) -> list[Finding] | None:
+    """Check URL against VirusTotal database.
+    
+    Rate limits (free tier):
+    - 4 lookups/min
+    - 500 lookups/day
+    - 15.5K lookups/month
+    
+    Returns None on error/unavailable (graceful degradation).
+    """
     if not virustotal_available():
         return None
     url_id = base64.urlsafe_b64encode(url.encode()).decode().rstrip("=")

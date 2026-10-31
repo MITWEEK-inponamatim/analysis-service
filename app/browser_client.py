@@ -1,8 +1,5 @@
 import base64
-import hashlib
 import os
-from datetime import datetime, timedelta, timezone
-from urllib.parse import quote
 
 import httpx
 from .browser_auth import browser_service_key
@@ -23,33 +20,39 @@ async def inspect_website(url: str, scan_id: str, user_id: str) -> dict:
     screenshot = result.pop("screenshot_base64", None)
     if screenshot:
         data = base64.b64decode(screenshot, validate=True)
-        supabase = os.getenv("SUPABASE_URL", "").rstrip("/")
-        secret = os.getenv("SUPABASE_SECRET_KEY", "")
-        if supabase and secret:
-            path = f"{user_id}/{scan_id}/page.png"
-            uploaded = False
+        cloudinary_url = os.getenv("CLOUDINARY_URL", "")
+        
+        if cloudinary_url:
             try:
-                async with httpx.AsyncClient(timeout=12) as client:
-                    async with client.stream(
-                        "POST",
-                        f"{supabase}/storage/v1/object/scan-artifacts/{quote(path, safe='/')}",
-                        headers={"apikey": secret, "Authorization": f"Bearer {secret}", "Content-Type": "image/png", "x-upsert": "true"},
-                        content=data,
-                    ) as upload:
-                        upload.raise_for_status()
-                    uploaded = True
-                    metadata = {"user_id": user_id, "scan_id": scan_id, "bucket": "scan-artifacts", "storage_path": path, "sha256": hashlib.sha256(data).hexdigest(), "size_bytes": len(data), "mime": "image/png", "expires_at": (datetime.now(timezone.utc) + timedelta(days=int(os.getenv("FILE_RETENTION_DAYS", "7")))).isoformat()}
-                    async with client.stream("POST", f"{supabase}/rest/v1/files", headers={"apikey": secret, "Authorization": f"Bearer {secret}", "Content-Type": "application/json", "Prefer": "return=minimal"}, json=metadata) as record:
-                        record.raise_for_status()
-                result["screenshot_path"] = path
+                import cloudinary
+                import cloudinary.uploader
+                
+                # Configure Cloudinary from URL
+                cloudinary.config(cloudinary_url=cloudinary_url)
+                
+                # Upload with public_id for organized storage
+                public_id = f"threatlens/scans/{user_id}/{scan_id}"
+                
+                # Synchronous upload (Cloudinary SDK doesn't have async)
+                # Run in thread to avoid blocking
+                import asyncio
+                loop = asyncio.get_event_loop()
+                upload_result = await loop.run_in_executor(
+                    None,
+                    lambda: cloudinary.uploader.upload(
+                        f"data:image/png;base64,{screenshot}",
+                        public_id=public_id,
+                        folder="threatlens/scans",
+                        resource_type="image",
+                        overwrite=True,
+                    )
+                )
+                
+                # Return Cloudinary URL
+                result["screenshot_path"] = upload_result.get("secure_url")
+                result["screenshot_public_id"] = upload_result.get("public_id")
+                
             except Exception:
-                if uploaded:
-                    try:
-                        async with httpx.AsyncClient(timeout=5) as client:
-                            async with client.stream("DELETE", f"{supabase}/storage/v1/object/scan-artifacts", headers={"apikey": secret, "Authorization": f"Bearer {secret}", "Content-Type": "application/json"}, json={"prefixes": [path]}) as cleanup:
-                                cleanup.raise_for_status()
-                    except Exception:
-                        pass
                 result["screenshot_path"] = None
                 result["screenshot_unavailable"] = True
         else:
@@ -57,4 +60,6 @@ async def inspect_website(url: str, scan_id: str, user_id: str) -> dict:
             result["screenshot_unavailable"] = True
     else:
         result["screenshot_path"] = None
+    
     return result
+
