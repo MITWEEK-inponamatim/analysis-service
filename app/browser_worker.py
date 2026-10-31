@@ -80,14 +80,15 @@ async def inspect(request: InspectRequest, x_service_key: str | None = Header(de
         final_url = ""
         title = ""
         failure = None
+        js_obfuscation = {"detected": False, "patterns": []}
         async with async_playwright() as playwright:
             browser = context = None
             proxy_key = os.getenv("BROWSER_SERVICE_KEY", "")
             if not proxy_key:
                 raise RuntimeError("browser egress proxy unavailable")
             browser_env = {key: os.environ[key] for key in ("PATH", "HOME", "PLAYWRIGHT_BROWSERS_PATH", "LANG", "TZ") if key in os.environ}
-            proxy_url = os.getenv("BROWSER_EGRESS_PROXY_URL", "http://172.29.254.2:8888")
-            browser = await playwright.chromium.launch(headless=True, chromium_sandbox=False, env=browser_env, proxy={"server": proxy_url, "username": request.scan_id, "password": egress_token(proxy_key), "bypass": ""}, args=["--disable-quic", "--disable-webrtc", "--disable-background-networking", "--disable-sync", "--disable-component-update", "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 172.29.254.2"])
+            proxy_url = os.getenv("BROWSER_EGRESS_PROXY_URL", "http://172.30.254.2:8888")
+            browser = await playwright.chromium.launch(headless=True, chromium_sandbox=False, env=browser_env, proxy={"server": proxy_url, "username": request.scan_id, "password": egress_token(proxy_key), "bypass": ""}, args=["--disable-quic", "--disable-webrtc", "--disable-background-networking", "--disable-sync", "--disable-component-update", "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 172.30.254.2"])
             context = await browser.new_context(accept_downloads=False, viewport={"width": 1280, "height": 720}, service_workers="block")
             page = await context.new_page()
 
