@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "notes": "Allowlist for the JIT skill loader. The backend must resolve skills by exact name from this file; agents never supply paths. Gateway and planner are core; specialized skills load on demand.",
+  "core": [
+    "brand-investigation-gateway",
+    "behavior-investigation-gateway",
+    "adaptive-investigation-planner"
+  ],
+  "skills": [
+    {
+      "name": "brand-investigation-gateway",
+      "layer": "gateway",
+      "agent": "brand",
+      "path": "gateway/brand-investigation-gateway/SKILL.md"
+    },
+    {
+      "name": "behavior-investigation-gateway",
+      "layer": "gateway",
+      "agent": "behavior",
+      "path": "gateway/behavior-investigation-gateway/SKILL.md"
+    },
+    {
+      "name": "adaptive-investigation-planner",
+      "layer": "orchestration",
+      "agent": "planner",
+      "path": "orchestration/adaptive-investigation-planner/SKILL.md"
+    },
+    {
+      "name": "inspect-navigation",
+      "layer": "evidence-collection",
+      "agent": "behavior",
+      "path": "evidence/inspect-navigation/SKILL.md"
+    },
+    {
+      "name": "inspect-page-content",
+      "layer": "evidence-collection",
+      "agent": "brand",
+      "path": "evidence/inspect-page-content/SKILL.md"
+    },
+    {
+      "name": "inspect-form-elements",
+      "layer": "evidence-collection",
+      "agent": "behavior",
+      "path": "evidence/inspect-form-elements/SKILL.md"
+    },
+    {
+      "name": "inspect-network-activity",
+      "layer": "evidence-collection",
+      "agent": "behavior",
+      "path": "evidence/inspect-network-activity/SKILL.md"
+    },
+    {
+      "name": "inspect-javascript-behavior",
+      "layer": "evidence-collection",
+      "agent": "behavior",
+      "path": "evidence/inspect-javascript-behavior/SKILL.md"
+    },
+    {
+      "name": "inspect-embedded-content",
+      "layer": "evidence-collection",
+      "agent": "brand",
+      "path": "evidence/inspect-embedded-content/SKILL.md"
+    },
+    {
+      "name": "investigate-brand-impersonation",
+      "layer": "security-investigation",
+      "agent": "brand",
+      "path": "investigation/investigate-brand-impersonation/SKILL.md"
+    },
+    {
+      "name": "investigate-form-destination",
+      "layer": "security-investigation",
+      "agent": "behavior",
+      "path": "investigation/investigate-form-destination/SKILL.md"
+    },
+    {
+      "name": "investigate-redirect-chain",
+      "layer": "security-investigation",
+      "agent": "behavior",
+      "path": "investigation/investigate-redirect-chain/SKILL.md"
+    },
+    {
+      "name": "investigate-external-domains",
+      "layer": "security-investigation",
+      "agent": "behavior",
+      "path": "investigation/investigate-external-domains/SKILL.md"
+    }
+  ]
+}
