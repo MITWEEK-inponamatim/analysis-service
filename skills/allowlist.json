@@ -34,7 +34,7 @@
     {
       "name": "inspect-page-content",
       "layer": "evidence-collection",
-      "agent": "brand",
+      "agents": ["brand", "behavior"],
       "path": "evidence/inspect-page-content/SKILL.md"
     },
     {
@@ -58,7 +58,7 @@
     {
       "name": "inspect-embedded-content",
       "layer": "evidence-collection",
-      "agent": "brand",
+      "agents": ["brand", "behavior"],
       "path": "evidence/inspect-embedded-content/SKILL.md"
     },
     {
@@ -70,7 +70,7 @@
     {
       "name": "investigate-form-destination",
       "layer": "security-investigation",
-      "agent": "behavior",
+      "agents": ["brand", "behavior"],
       "path": "investigation/investigate-form-destination/SKILL.md"
     },
     {
@@ -82,7 +82,7 @@
     {
       "name": "investigate-external-domains",
       "layer": "security-investigation",
-      "agent": "behavior",
+      "agents": ["brand", "behavior"],
       "path": "investigation/investigate-external-domains/SKILL.md"
     }
   ]

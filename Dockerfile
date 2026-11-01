@@ -5,5 +5,6 @@ RUN useradd --create-home --uid 10001 app
 COPY requirements.txt .
 RUN pip install --no-cache-dir --retries 10 --timeout 120 -r requirements.txt
 COPY app ./app
+COPY skills ./skills
 USER app
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

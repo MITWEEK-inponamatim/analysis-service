@@ -66,11 +66,14 @@ async def save_job(job_id: str, row: dict[str, Any]):
     secret = os.getenv("SUPABASE_SECRET_KEY", "")
     if not url or not secret:
         return
-    async with httpx.AsyncClient(timeout=10) as client:
-        response = await client.post(f"{url}/rest/v1/analysis_jobs", params={"on_conflict": "job_id"},
-            headers={"apikey": secret, "Authorization": f"Bearer {secret}", "Prefer": "resolution=merge-duplicates"},
-            json=row)
-        response.raise_for_status()
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(f"{url}/rest/v1/analysis_jobs", params={"on_conflict": "job_id"},
+                headers={"apikey": secret, "Authorization": f"Bearer {secret}", "Prefer": "resolution=merge-duplicates"},
+                json=row)
+            response.raise_for_status()
+    except Exception:
+        pass  # Persistence failure doesn't block in-memory execution
 
 
 async def update_job(job_id: str, **fields):
@@ -78,11 +81,14 @@ async def update_job(job_id: str, **fields):
     url = os.getenv("SUPABASE_URL", "").rstrip("/")
     secret = os.getenv("SUPABASE_SECRET_KEY", "")
     if url and secret:
-        async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.patch(f"{url}/rest/v1/analysis_jobs", params={"job_id": f"eq.{job_id}"},
-                headers={"apikey": secret, "Authorization": f"Bearer {secret}"},
-                json={k: v for k, v in fields.items() if k in {"status", "progress", "report", "error"}})
-            response.raise_for_status()
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                response = await client.patch(f"{url}/rest/v1/analysis_jobs", params={"job_id": f"eq.{job_id}"},
+                    headers={"apikey": secret, "Authorization": f"Bearer {secret}"},
+                    json={k: v for k, v in fields.items() if k in {"status", "progress", "report", "error"}})
+                response.raise_for_status()
+        except Exception:
+            pass
 
 
 def _payload(report: Any) -> dict[str, Any]:

@@ -124,6 +124,28 @@ async def scan_url_pipeline(scan_id: str, url: str, user_id: str, checkpointer_u
     browser_evidence = {}
     if inspect_browser:
         browser_evidence = await _browser_stage(scan_id, url, user_id, findings, checks, unavailable, usage, artifacts)
+    investigation = {}
+    if browser_evidence:
+        from .investigation import investigation_enabled, run_investigation
+
+        enabled, gate_reasons = investigation_enabled(findings, browser_evidence, unavailable, url)
+        if enabled:
+            outcome = await run_investigation(
+                scan_id=scan_id,
+                user_id=user_id,
+                url=url,
+                browser_evidence=browser_evidence,
+                deterministic_findings=findings,
+                unavailable=unavailable,
+                gate_reasons=gate_reasons,
+            )
+            findings.extend(outcome.findings)
+            checks.extend(outcome.checks)
+            unavailable.extend(outcome.unavailable)
+            investigation = outcome.artifacts
+        else:
+            investigation = {"status": "skipped", "gate_reasons": gate_reasons}
+    artifacts["investigation"] = investigation
     report = assess(scan_id, "url", findings, checks, unavailable, usage)
     report.artifacts.update(artifacts)
     
@@ -135,6 +157,7 @@ async def scan_url_pipeline(scan_id: str, url: str, user_id: str, checkpointer_u
         "virustotal": [f.dict() for f in findings if f.source == "virustotal"],
     }
     browser_data = {key: value for key, value in browser_evidence.items() if key != "screenshot_base64"}
+    browser_data["investigation"] = investigation
     await save_scan_evidence(scan_id, user_id, threat_intel_data, recon_data, browser_data)
     if inspect_browser:
         if "browser_inspection" not in checks:

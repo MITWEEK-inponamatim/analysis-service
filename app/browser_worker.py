@@ -44,6 +44,22 @@ def safe_evidence_url(value: str) -> str:
         return ""
 
 
+def safe_link_url(value: str) -> str:
+    """Keep scheme/host/path; drop query and fragment so tokens never leave the worker."""
+    try:
+        parts = urlsplit(value)
+        if parts.scheme not in {"http", "https"}:
+            return ""
+        host = parts.hostname or ""
+        if ":" in host:
+            host = f"[{host}]"
+        if parts.port and parts.port not in {80, 443}:
+            host += f":{parts.port}"
+        return urlunsplit((parts.scheme, host, parts.path or "/", "", ""))[:2048]
+    except ValueError:
+        return ""
+
+
 @app.get("/internal/v1/health")
 async def health(x_service_key: str | None = Header(default=None)):
     require_service_key(x_service_key)
@@ -81,6 +97,12 @@ async def inspect(request: InspectRequest, x_service_key: str | None = Header(de
         title = ""
         failure = None
         js_obfuscation = {"detected": False, "patterns": []}
+        page_meta: dict[str, str] = {}
+        headings: list[str] = []
+        links: list[dict[str, str]] = []
+        iframes: list[dict[str, str]] = []
+        logo_candidates: list[dict[str, str]] = []
+        shadow_root_count = 0
         async with async_playwright() as playwright:
             browser = context = None
             proxy_key = os.getenv("BROWSER_SERVICE_KEY", "")
@@ -169,7 +191,7 @@ async def inspect(request: InspectRequest, x_service_key: str | None = Header(de
                     })""")
                     forms = [{
                         **item,
-                        "action": safe_evidence_url(item.get("action", "")),
+                        "action": safe_link_url(item.get("action", "")),
                         "password_fields": min(20, max(0, int(item.get("password_fields", 0)))),
                         "input_types": item.get("input_types", [])[:20],
                         "input_names": item.get("input_names", [])[:20],
@@ -180,6 +202,58 @@ async def inspect(request: InspectRequest, x_service_key: str | None = Header(de
                     } for item in forms]
                 except Exception:
                     forms = []
+                # Bounded identity, link, and embedded-content evidence (no interaction).
+                try:
+                    extra = await page.evaluate("""() => {
+                        const meta = {};
+                        for (const node of document.querySelectorAll('meta[name],meta[property]')) {
+                            const key = (node.getAttribute('name') || node.getAttribute('property') || '').toLowerCase();
+                            if (['description','og:site_name','og:title','application-name'].includes(key)) {
+                                meta[key] = (node.getAttribute('content') || '').slice(0, 300);
+                            }
+                        }
+                        const headings = Array.from(document.querySelectorAll('h1,h2,h3')).slice(0, 30)
+                            .map(node => (node.textContent || '').trim().slice(0, 200)).filter(Boolean);
+                        const links = Array.from(document.querySelectorAll('a[href]')).slice(0, 200)
+                            .map(node => ({href: node.href, text: (node.textContent || '').trim().slice(0, 120)}))
+                            .filter(item => item.href.startsWith('http://') || item.href.startsWith('https://'));
+                        const iframes = Array.from(document.querySelectorAll('iframe')).slice(0, 30)
+                            .map(node => ({src: node.src || '', title: (node.title || '').slice(0, 120), sandbox: node.getAttribute('sandbox') || ''}));
+                        const logoCandidates = Array.from(document.querySelectorAll('header img, nav img, img[alt]')).slice(0, 20)
+                            .map(node => {
+                                let host = '';
+                                try { host = new URL(node.src).host; } catch (error) {}
+                                return {alt: (node.alt || '').slice(0, 120), src_host: host};
+                            });
+                        let shadowRootCount = 0;
+                        const all = document.querySelectorAll('*');
+                        for (let index = 0; index < all.length && index < 3000; index++) {
+                            if (all[index].shadowRoot) shadowRootCount++;
+                        }
+                        return {meta, headings, links, iframes, logo_candidates: logoCandidates, shadow_root_count: shadowRootCount};
+                    }""")
+                    page_meta = {str(key)[:60]: str(value)[:300] for key, value in (extra.get("meta") or {}).items()}
+                    headings = [str(item)[:200] for item in (extra.get("headings") or [])][:30]
+                    links = [
+                        {"href": safe_link_url(str(item.get("href") or "")), "text": str(item.get("text") or "")[:120]}
+                        for item in (extra.get("links") or [])
+                    ][:60]
+                    links = [item for item in links if item["href"]]
+                    iframes = [
+                        {
+                            "src": safe_link_url(str(item.get("src") or "")),
+                            "title": str(item.get("title") or "")[:120],
+                            "sandbox": str(item.get("sandbox") or "")[:200],
+                        }
+                        for item in (extra.get("iframes") or [])
+                    ][:30]
+                    logo_candidates = [
+                        {"alt": str(item.get("alt") or "")[:120], "src_host": str(item.get("src_host") or "")[:200]}
+                        for item in (extra.get("logo_candidates") or [])
+                    ][:20]
+                    shadow_root_count = min(3000, int(extra.get("shadow_root_count") or 0))
+                except Exception:
+                    pass
                 # JavaScript obfuscation detection
                 js_obfuscation = {"detected": False, "patterns": []}
                 try:
@@ -255,6 +329,12 @@ async def inspect(request: InspectRequest, x_service_key: str | None = Header(de
         "blocked_methods": blocked_methods[:100],
         "ssrf_blocked": bool(ssrf_attempts or failed_requests),
         "js_obfuscation": js_obfuscation,
+        "meta": page_meta,
+        "headings": headings,
+        "links": links,
+        "iframes": iframes,
+        "logo_candidates": logo_candidates,
+        "shadow_root_count": shadow_root_count,
         "screenshot_base64": screenshot,
         "error": failure,
     }
