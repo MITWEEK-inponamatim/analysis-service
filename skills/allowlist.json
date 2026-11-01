@@ -62,6 +62,24 @@
       "path": "evidence/inspect-embedded-content/SKILL.md"
     },
     {
+      "name": "identify-claimed-brand",
+      "layer": "evidence-collection",
+      "agent": "brand",
+      "path": "brand/identify-claimed-brand.md"
+    },
+    {
+      "name": "verify-official-domain",
+      "layer": "evidence-collection",
+      "agent": "brand",
+      "path": "brand/verify-official-domain.md"
+    },
+    {
+      "name": "compare-brand-identity",
+      "layer": "evidence-collection",
+      "agent": "brand",
+      "path": "brand/compare-brand-identity.md"
+    },
+    {
       "name": "investigate-brand-impersonation",
       "layer": "security-investigation",
       "agent": "brand",

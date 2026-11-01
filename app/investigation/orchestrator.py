@@ -40,6 +40,10 @@ class InvestigationState(TypedDict, total=False):
     findings: list[Finding]
     checks: list[str]
     artifacts: dict[str, Any]
+    claimed_brands: list[dict[str, Any]]
+    official_identity: dict[str, Any]
+    identity_comparison: dict[str, Any]
+    brand_investigation_step: int
 
 @dataclass
 class InvestigationResult:
@@ -97,14 +101,99 @@ def _seed(state: InvestigationState) -> dict[str, Any]:
     return {"store": store, "executor": executor, "round": 1}
 
 
-async def _brand(state: InvestigationState) -> dict[str, Any]:
-    envelope = await run_skill_agent(
-        "brand",
-        store=state["store"],
-        executor=state["executor"],
-        deterministic_findings=state.get("deterministic_findings") or [],
-    )
-    return {"brand": envelope}
+async def _brand_identify(state: InvestigationState) -> dict[str, Any]:
+    """Step 1: Identify claimed brands."""
+    envelope = await state["executor"].run("identify-claimed-brand", {})
+    claimed_brands = []
+    for obs in envelope.observations:
+        if obs.fact == "brand_claims":
+            claimed_brands = obs.payload.get("claimed_brands", [])
+            break
+    return {"brand_investigation_step": 1, "claimed_brands": claimed_brands, "collected": [envelope]}
+
+
+async def _brand_verify(state: InvestigationState) -> dict[str, Any]:
+    """Step 2: Verify official domains via Exa."""
+    claimed_brands = state.get("claimed_brands") or []
+    if not claimed_brands:
+        return {"brand_investigation_step": 2, "official_identity": {}}
+    
+    primary_brand = claimed_brands[0].get("name", "")
+    envelope = await state["executor"].run("verify-official-domain", {"brand_name": primary_brand})
+    
+    official_identity = {}
+    for obs in envelope.observations:
+        if obs.fact == "official_domain_verification":
+            official_identity = obs.payload
+            break
+    
+    collected = list(state.get("collected") or [])
+    collected.append(envelope)
+    return {"brand_investigation_step": 2, "official_identity": official_identity, "collected": collected}
+
+
+async def _brand_compare(state: InvestigationState) -> dict[str, Any]:
+    """Step 3: Compare claimed vs official identity."""
+    claimed_brands = state.get("claimed_brands") or []
+    official_identity = state.get("official_identity") or {}
+    
+    # Always run comparison, even with empty official_identity (returns "unknown")
+    params = {
+        "claimed_brand": claimed_brands[0].get("name", "") if claimed_brands else "",
+        "official_domains": official_identity.get("official_domains", []),
+        "verification_status": official_identity.get("verification_status", "unknown"),
+    }
+    
+    envelope = await state["executor"].run("compare-brand-identity", params)
+    
+    identity_comparison = {}
+    for obs in envelope.observations:
+        if obs.fact == "identity_comparison":
+            identity_comparison = obs.payload
+            break
+    
+    collected = list(state.get("collected") or [])
+    collected.append(envelope)
+    return {"brand_investigation_step": 3, "identity_comparison": identity_comparison, "collected": collected}
+
+async def _brand_impersonation(state: InvestigationState) -> dict[str, Any]:
+    """Step 4: Synthesize impersonation findings."""
+    claimed_brands = state.get("claimed_brands") or []
+    official_identity = state.get("official_identity") or {}
+    identity_comparison = state.get("identity_comparison") or {}
+    
+    if not claimed_brands:
+        return {"brand": SkillEnvelope(skill="brand-pipeline", status="completed")}
+    
+    # Gather evidence IDs from prior steps
+    collected = state.get("collected") or []
+    evidence_ids = {}
+    for env in collected[-3:]:  # Last 3 envelopes
+        if env.observations:
+            obs = env.observations[0]
+            if obs.fact == "brand_claims":
+                evidence_ids["brand_claims"] = obs.evidence_id
+            elif obs.fact == "official_domain_verification":
+                evidence_ids["domain_verification"] = obs.evidence_id
+            elif obs.fact == "identity_comparison":
+                evidence_ids["identity_comparison"] = obs.evidence_id
+    
+    params = {
+        "claimed_brand": claimed_brands[0].get("name", ""),
+        "official_domains": official_identity.get("official_domains", []),
+        "verification_status": official_identity.get("verification_status", "unknown"),
+        "identity_consistency": identity_comparison.get("consistency_status", "unknown"),
+        "domain_relation": identity_comparison.get("domain_relation", "unknown"),
+        "lookalike_rules": identity_comparison.get("lookalike_rules", []),
+        "service_match_status": identity_comparison.get("service_match", {}).get("status", "unknown"),
+        "evidence_ids": evidence_ids,
+    }
+    
+    envelope = await state["executor"].run("investigate-brand-impersonation", params)
+    
+    collected = list(state.get("collected") or [])
+    collected.append(envelope)
+    return {"brand": envelope, "brand_investigation_step": 4, "collected": collected}
 
 
 async def _behavior(state: InvestigationState) -> dict[str, Any]:
@@ -252,15 +341,20 @@ async def _finalize(state: InvestigationState) -> dict[str, Any]:
 def _compiled_graph():
     graph = StateGraph(InvestigationState)
     graph.add_node("seed", _seed)
-    graph.add_node("brand", _brand)
+    graph.add_node("brand_identify", _brand_identify)
+    graph.add_node("brand_verify", _brand_verify)
+    graph.add_node("brand_compare", _brand_compare)
+    graph.add_node("brand_impersonation", _brand_impersonation)
     graph.add_node("behavior", _behavior)
     graph.add_node("plan", _plan)
     graph.add_node("execute", _execute)
     graph.add_node("finalize", _finalize)
     graph.add_edge(START, "seed")
-    graph.add_edge("seed", "brand")
-    graph.add_edge("seed", "behavior")
-    graph.add_edge("brand", "plan")
+    graph.add_edge("seed", "brand_identify")
+    graph.add_edge("brand_identify", "brand_verify")
+    graph.add_edge("brand_verify", "brand_compare")
+    graph.add_edge("brand_compare", "brand_impersonation")
+    graph.add_edge("brand_impersonation", "behavior")
     graph.add_edge("behavior", "plan")
     graph.add_conditional_edges("plan", _route_after_plan, {"execute": "execute", "finalize": "finalize"})
     graph.add_edge("execute", "plan")
