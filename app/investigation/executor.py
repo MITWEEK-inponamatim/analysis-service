@@ -22,7 +22,7 @@ EVIDENCE_SKILLS = {
     "investigate-brand-impersonation",
     "investigate-form-destination",
     "investigate-redirect-chain",
-    "investigate-external-domains",
+    "investigate-external-claims",
 }
 MAX_SKILL_CALLS = 12
 MAX_TEXT_EXCERPT = 6000
@@ -497,4 +497,49 @@ class EvidenceExecutor:
             observations=[("domain", payload, "external_domain_attribution")],
             findings=findings,
             gaps=["hosts_truncated"] if len(hosts) > 30 else [],
+        )
+
+    async def _investigate_external_claims(self, params: dict[str, Any]) -> SkillEnvelope:
+        from .. import exa
+        
+        query = str(params.get("query") or "").strip()
+        if not query or len(query) < 10:
+            return SkillEnvelope(skill="investigate-external-claims", status="failed", gaps=["query_too_short"])
+        if len(query) > 200:
+            query = query[:200]
+        
+        if not exa.available():
+            return SkillEnvelope(skill="investigate-external-claims", status="partial", unavailable=["exa_unavailable"])
+        
+        result = await exa.search(query, num_results=3)
+        if result is None or not result.get("results"):
+            return SkillEnvelope(skill="investigate-external-claims", status="partial", gaps=["no_relevant_results"])
+        
+        payload = {
+            "query": query,
+            "results": result["results"][:3],
+            "result_count": len(result["results"]),
+        }
+        evidence_id = self.store.add("search", payload, skill="investigate-external-claims", fact="web_search_results")
+        
+        # Low-confidence findings only
+        findings: list[InvestigationFinding] = []
+        combined_text = " ".join(r.get("text", "") + " " + r.get("title", "") for r in result["results"]).lower()
+        
+        # Check for scam/phishing mentions
+        if any(term in combined_text for term in ["scam", "phishing", "fraud", "penipuan", "hoax"]):
+            findings.append(
+                self._finding(
+                    f"Pencarian web menemukan laporan terkait penipuan untuk '{query[:100]}'.",
+                    "low",
+                    [evidence_id],
+                    "Hasil pencarian menyebutkan indikator penipuan. Confidence rendah: butuh verifikasi manual.",
+                )
+            )
+        
+        return self._envelope(
+            "investigate-external-claims",
+            observations=[("search", payload, "web_search_results")],
+            findings=findings,
+            gaps=["query_too_vague"] if not findings and len(result["results"]) < 2 else [],
         )

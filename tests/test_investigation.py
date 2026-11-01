@@ -55,7 +55,7 @@ def browser_evidence():
 
 
 def test_skill_loader_allowlist_and_permissions():
-    assert len(skills.names()) == 13
+    assert len(skills.names()) == 14
     assert "brand-investigation-gateway" in skills.names()
     assert "brand-investigation-gateway" in skills.load_skill("brand-investigation-gateway", "brand")
     with pytest.raises(skills.SkillError):
@@ -184,4 +184,32 @@ def test_orchestrator_runs_without_llm(monkeypatch):
         assert result.artifacts["status"] == "completed"
         assert "evidence_items_storage" in result.unavailable
 
+    asyncio.run(run())
+
+
+def test_executor_exa_search_skill():
+    """Exa search skill returns evidence when configured."""
+    import asyncio
+    from app.investigation.executor import EvidenceExecutor
+    from app.investigation.evidence import EvidenceStore
+    
+    async def run():
+        store = EvidenceStore("scan-exa", "user-1")
+        executor = EvidenceExecutor(
+            store,
+            scan_id="scan-exa",
+            user_id="user-1",
+            url="http://phishing.test/",
+            browser_evidence={"title": "Free iPhone", "visible_text": "Claim now"},
+            deterministic_findings=[],
+        )
+        result = await executor.run("investigate-external-claims", {"query": "iPhone giveaway scam"})
+        # Unavailable if no EXA_API_KEY, completed if configured
+        assert result.status in {"completed", "partial"}
+        if result.status == "completed":
+            assert len(result.evidence_ids) == 1
+            assert result.evidence_ids[0].startswith("ev_search_")
+        else:
+            assert "exa_unavailable" in result.unavailable
+    
     asyncio.run(run())

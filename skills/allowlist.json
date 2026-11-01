@@ -84,6 +84,12 @@
       "layer": "security-investigation",
       "agents": ["brand", "behavior"],
       "path": "investigation/investigate-external-domains/SKILL.md"
+    },
+    {
+      "name": "investigate-external-claims",
+      "layer": "security-investigation",
+      "agents": ["brand", "behavior"],
+      "path": "investigate-external-claims.md"
     }
   ]
 }
