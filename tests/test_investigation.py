@@ -55,7 +55,7 @@ def browser_evidence():
 
 
 def test_skill_loader_allowlist_and_permissions():
-    assert len(skills.names()) == 14
+    assert len(skills.names()) == 17
     assert "brand-investigation-gateway" in skills.names()
     assert "brand-investigation-gateway" in skills.load_skill("brand-investigation-gateway", "brand")
     with pytest.raises(skills.SkillError):

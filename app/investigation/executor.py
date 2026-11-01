@@ -19,6 +19,9 @@ EVIDENCE_SKILLS = {
     "inspect-network-activity",
     "inspect-javascript-behavior",
     "inspect-embedded-content",
+    "identify-claimed-brand",
+    "verify-official-domain",
+    "compare-brand-identity",
     "investigate-brand-impersonation",
     "investigate-form-destination",
     "investigate-redirect-chain",
@@ -345,43 +348,6 @@ class EvidenceExecutor:
                 best = brand
         return best, list(brands.get(best, [])), ["page_text_match"] if best else []
 
-    async def _investigate_brand_impersonation(self, _params: dict[str, Any]) -> SkillEnvelope:
-        brand, official_domains, sources = self._official_context()
-        relation = det.domain_relation(self.page_host, official_domains) if brand else "unknown"
-        rules = det.lookalike_rules(self.page_host, brand) if brand else []
-        forms = det.sensitive_forms(self.browser, self.page_host)
-        payload = {
-            "claimed_brand": brand or None,
-            "claim_sources": sources,
-            "site_domain": det.registrable_domain(self.page_host),
-            "official_domains": official_domains[:5],
-            "domain_relation": relation,
-            "lookalike_rules": rules,
-            "sensitive_form_count": len(forms),
-        }
-        findings: list[InvestigationFinding] = []
-        if brand and relation in {"unrelated", "lookalike"} and not det.same_registrable_domain(self.page_host, official_domains[0] if official_domains else ""):
-            evidence_ids = [self.store.add("brand", payload, skill="investigate-brand-impersonation", fact="brand_identity_comparison")]
-            severity = "high" if forms else "medium"
-            findings.append(
-                self._finding(
-                    f"Situs mengklaim identitas {brand} pada domain yang tidak terdaftar sebagai domain resmi.",
-                    severity,
-                    evidence_ids,
-                    "Perbandingan domain deterministik; severity naik bila ada form sensitif.",
-                )
-            )
-            return self._envelope(
-                "investigate-brand-impersonation",
-                observations=[("brand", payload, "brand_identity_comparison")],
-                findings=findings,
-                gaps=[] if official_domains else ["official_domain_unverified"],
-            )
-        return self._envelope(
-            "investigate-brand-impersonation",
-            observations=[("brand", payload, "brand_identity_comparison")],
-            gaps=["brand_unresolved"] if not brand else ([] if official_domains else ["official_domain_unverified"]),
-        )
 
     async def _investigate_form_destination(self, _params: dict[str, Any]) -> SkillEnvelope:
         forms = det.sensitive_forms(self.browser, self.page_host)
@@ -542,4 +508,281 @@ class EvidenceExecutor:
             observations=[("search", payload, "web_search_results")],
             findings=findings,
             gaps=["query_too_vague"] if not findings and len(result["results"]) < 2 else [],
+        )
+    async def _identify_claimed_brand(self, _params: dict[str, Any]) -> SkillEnvelope:
+        """Extract brand claims from page evidence."""
+        title = str(self.browser.get("title") or "")
+        text = str(self.browser.get("visible_text") or "")
+        headings = [str(h) for h in (self.browser.get("headings") or [])]
+        
+        brands_db = load_brands()
+        claimed = []
+        
+        for brand in brands_db:
+            if len(brand) < 3:
+                continue
+            pattern = rf"\b{re.escape(brand)}\b"
+            
+            # Title match = high confidence
+            if re.search(pattern, title, re.I):
+                claimed.append({
+                    "name": brand,
+                    "confidence": "high",
+                    "claim_type": "identity",
+                    "evidence_sources": ["title"],
+                    "context_snippet": title[:100],
+                })
+                break  # Take first high-confidence match
+            
+            # Heading match = medium
+            for heading in headings[:5]:
+                if re.search(pattern, heading, re.I):
+                    claimed.append({
+                        "name": brand,
+                        "confidence": "medium",
+                        "claim_type": "identity",
+                        "evidence_sources": ["heading"],
+                        "context_snippet": heading[:100],
+                    })
+                    break
+            if claimed:
+                break
+        
+        payload = {
+            "page_host": self.page_host,
+            "claimed_brands": claimed[:3],
+            "title": title[:200],
+            "text_excerpt": text[:200],
+        }
+        
+        return self._envelope(
+            "identify-claimed-brand",
+            observations=[("brand", payload, "brand_claims")],
+            gaps=["no_brand_claim"] if not claimed else [],
+        )
+
+    async def _verify_official_domain(self, params: dict[str, Any]) -> SkillEnvelope:
+        """Exa multi-query verification."""
+        from .. import exa
+        
+        brand_name = str(params.get("brand_name") or "")
+        if not brand_name:
+            return self._envelope(
+                "verify-official-domain",
+                observations=[],
+                gaps=["missing_brand_name"],
+                status="failed",
+            )
+        
+        if not exa.available():
+            return self._envelope(
+                "verify-official-domain",
+                observations=[],
+                unavailable=["exa_unavailable"],
+            )
+        
+        queries = [
+            f"{brand_name} official website",
+            f"situs resmi {brand_name}",
+        ]
+        
+        all_results = []
+        for query in queries[:2]:
+            result = await exa.search(query, num_results=5)
+            if result and result.get("results"):
+                all_results.extend(result["results"])
+        
+        def classify_authority(item: dict[str, Any]) -> str:
+            url = item.get("url", "").lower()
+            if any(x in url for x in [".gov", ".go.id", "wikipedia.org"]):
+                return "high"
+            if brand_name.lower() in url and url.startswith("https://"):
+                return "high"
+            if any(x in url for x in ["kompas.com", "detik.com", "cnnindonesia.com"]):
+                return "medium"
+            if any(x in url for x in [".blogspot", ".wordpress", "reddit.com"]):
+                return "low"
+            return "medium"
+        
+        domain_counts: dict[str, int] = {}
+        sources = []
+        for item in all_results[:10]:
+            url = item.get("url", "")
+            host = det.normalize_host(url)
+            if not host:
+                continue
+            authority = classify_authority(item)
+            if authority in ["high", "medium"]:
+                domain_counts[host] = domain_counts.get(host, 0) + 1
+                sources.append({
+                    "url": url[:500],
+                    "title": item.get("title", "")[:200],
+                    "authority": authority,
+                    "mentioned_domains": [host],
+                })
+        
+        verified = [d for d, cnt in domain_counts.items() if cnt >= 2]
+        status = "verified" if verified else ("unverified" if domain_counts else "not_found")
+        
+        payload = {
+            "brand": brand_name,
+            "official_domains": verified,
+            "candidate_domains": list(domain_counts.keys()),
+            "verification_status": status,
+            "sources": sources[:5],
+            "queries_used": queries,
+            "result_count": len(all_results),
+        }
+        
+        return self._envelope(
+            "verify-official-domain",
+            observations=[("brand", payload, "official_domain_verification")],
+            gaps=["no_search_results"] if status == "not_found" else (["single_source_only"] if status == "unverified" else []),
+        )
+
+    async def _compare_brand_identity(self, params: dict[str, Any]) -> SkillEnvelope:
+        """Compare claimed vs official domains."""
+        claimed_brand = str(params.get("claimed_brand") or "")
+        official_domains = list(params.get("official_domains") or [])
+        verification_status = str(params.get("verification_status") or "unknown")
+        
+        if not claimed_brand:
+            return self._envelope(
+                "compare-brand-identity",
+                observations=[],
+                gaps=["missing_claimed_brand"],
+                status="failed",
+            )
+        
+        relation = det.domain_relation(self.page_host, official_domains) if official_domains else "unknown"
+        lookalike_rules = det.lookalike_rules(self.page_host, claimed_brand) if relation == "unrelated" else []
+        
+        forms = det.sensitive_forms(self.browser, self.page_host)
+        third_party_destinations = []
+        for form in forms:
+            action_host = form.get("action_host", "")
+            if action_host and not any(det.same_registrable_domain(action_host, official) for official in official_domains):
+                if action_host != self.page_host:
+                    third_party_destinations.append(action_host)
+        
+        service_status = "inconsistent" if third_party_destinations else ("no_forms" if not forms else "consistent")
+        
+        if relation in ["exact", "subdomain", "same_registrable"]:
+            consistency = "consistent"
+        elif relation == "unrelated":
+            if len(lookalike_rules) >= 2 and third_party_destinations:
+                consistency = "inconsistent"
+            elif third_party_destinations:
+                consistency = "inconsistent"
+            else:
+                consistency = "suspicious"
+        else:
+            consistency = "unknown"
+        
+        reasons = []
+        if relation == "unrelated":
+            reasons.append("Domain unrelated to official domains")
+        if lookalike_rules:
+            reasons.append(f"Lookalike domain detected: {', '.join(lookalike_rules[:3])}")
+        if third_party_destinations:
+            reasons.append(f"Form submits to third-party: {', '.join(third_party_destinations[:2])}")
+        
+        payload = {
+            "page_host": self.page_host,
+            "claimed_brand": claimed_brand,
+            "official_domains": official_domains,
+            "verification_status": verification_status,
+            "domain_relation": relation,
+            "lookalike_rules": lookalike_rules,
+            "visual_match": "insufficient",
+            "service_match": {
+                "status": service_status,
+                "forms_checked": len(forms),
+                "third_party_destinations": third_party_destinations,
+            },
+            "consistency_status": consistency,
+            "consistency_reasons": reasons,
+        }
+        
+        return self._envelope(
+            "compare-brand-identity",
+            observations=[("brand", payload, "identity_comparison")],
+            gaps=["no_official_domains"] if not official_domains else [],
+        )
+
+    async def _investigate_brand_impersonation(self, params: dict[str, Any]) -> SkillEnvelope:
+        """Synthesize findings from prior brand steps."""
+        claimed_brand = str(params.get("claimed_brand") or "")
+        official_domains = list(params.get("official_domains") or [])
+        verification_status = str(params.get("verification_status") or "unknown")
+        identity_consistency = str(params.get("identity_consistency") or "unknown")
+        domain_relation = str(params.get("domain_relation") or "unknown")
+        lookalike_rules = list(params.get("lookalike_rules") or [])
+        service_match_status = str(params.get("service_match_status") or "unknown")
+        evidence_ids_dict = params.get("evidence_ids") or {}
+        
+        evidence_ids = [
+            evidence_ids_dict.get("brand_claims", ""),
+            evidence_ids_dict.get("domain_verification", ""),
+            evidence_ids_dict.get("identity_comparison", ""),
+        ]
+        valid_ids = [eid for eid in evidence_ids if eid and self.store.exists(eid)]
+        
+        if identity_consistency == "consistent":
+            return self._envelope(
+                "investigate-brand-impersonation",
+                observations=[],
+                findings=[],
+            )
+        
+        # Determine severity
+        if identity_consistency == "unknown":
+            severity = "low"
+        elif identity_consistency == "suspicious":
+            severity = "low" if service_match_status == "no_forms" else "medium"
+        elif identity_consistency == "inconsistent":
+            if service_match_status == "inconsistent":
+                forms = det.sensitive_forms(self.browser, self.page_host)
+                categories = set()
+                for form in forms:
+                    categories.update(form.get("sensitive_categories", []))
+                if "password" in categories and "otp" in categories:
+                    severity = "critical"
+                elif "password" in categories or "identity" in categories:
+                    severity = "high"
+                else:
+                    severity = "medium"
+            else:
+                severity = "medium"
+        else:
+            severity = "medium"
+        
+        # Confidence
+        confidence = "high"
+        if verification_status == "unverified":
+            confidence = "medium"
+        elif verification_status in ["conflicting", "not_found"]:
+            confidence = "low"
+        
+        # Interpretation
+        parts = [f"Situs mengklaim identitas {claimed_brand} pada domain yang tidak terdaftar sebagai domain resmi."]
+        if lookalike_rules:
+            parts.append(f"Domain menggunakan teknik lookalike: {', '.join(lookalike_rules[:3])}.")
+        if service_match_status == "inconsistent":
+            parts.append("Form kredensial mengarah ke domain pihak ketiga.")
+        interpretation = " ".join(parts)
+        
+        finding = self._finding(
+            f"Situs mengklaim identitas {claimed_brand} pada domain yang tidak terdaftar sebagai domain resmi.",
+            severity,
+            valid_ids,
+            interpretation,
+        )
+        finding.confidence = confidence  # type: ignore[attr-defined]
+        
+        return self._envelope(
+            "investigate-brand-impersonation",
+            observations=[],
+            findings=[finding],
+            gaps=["evidence_integrity_error"] if len(valid_ids) < len([e for e in evidence_ids if e]) else (["official_domain_unverified"] if verification_status in ["not_found", "conflicting"] else []),
         )
