@@ -30,6 +30,8 @@ SOURCE_WEIGHT = {
     "heuristic": 0.5,
     "llm_analysis": 0.45,
     "llm_vision": 0.45,
+    "brand_agent": 0.6,
+    "behavior_agent": 0.6,
     "phone_validation": 0.4,
 }
 POSITIVE_CHECKS = {
