@@ -239,3 +239,45 @@ def fail_report(
 def finding(indicator: str, source: str, severity: str = "medium", metadata: dict[str, Any] | None = None, confidence: str = "medium") -> Finding:
     return Finding(id=f"{source}:{indicator}"[:64], indicator=indicator, source=source, severity=severity,
                    timestamp=datetime.now(timezone.utc).isoformat(), confidence=confidence, metadata=metadata or {})
+
+
+def collect_metrics(
+    scan_id: str,
+    report: ScanReport,
+    duration_ms: int,
+    components_used: list[str],
+    external_api_calls: int = 0,
+) -> dict[str, Any]:
+    """Collect scan metrics for manual evaluation of precision, recall, FPR, latency, cost.
+    
+    Returns dict compatible with ScanMetrics schema. Ground truth labeling done manually.
+    """
+    from .schemas import ScanMetrics
+    
+    llm = report.llm_usage
+    findings_by_severity = {}
+    findings_by_source = {}
+    
+    for f in report.findings:
+        findings_by_severity[f.severity] = findings_by_severity.get(f.severity, 0) + 1
+        findings_by_source[f.source] = findings_by_source.get(f.source, 0) + 1
+    
+    # Rough cost estimate (adjust per actual model pricing)
+    tokens = llm.get("prompt_tokens", 0) + llm.get("completion_tokens", 0)
+    cost_usd = tokens * 0.000002 if tokens > 0 else 0.0  # ponytail: placeholder rate
+    
+    return ScanMetrics(
+        scan_id=scan_id,
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        duration_ms=duration_ms,
+        components_used=components_used,
+        llm_calls=1 if llm.get("status") not in ("not_used", "") else 0,
+        llm_tokens=tokens,
+        llm_cost_usd=cost_usd,
+        external_api_calls=external_api_calls,
+        findings_count=len(report.findings),
+        findings_by_severity=findings_by_severity,
+        findings_by_source=findings_by_source,
+        final_risk_level=report.risk.get("level", "unknown"),
+        outcome=report.outcome,
+    ).model_dump()

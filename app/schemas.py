@@ -20,6 +20,25 @@ class Coverage(BaseModel):
     positive_checks: int = 0
     total_checks_attempted: int = 0
 
+class ScanMetrics(BaseModel):
+    """Metrics for manual evaluation of scanner performance."""
+    scan_id: str
+    timestamp: str
+    duration_ms: int
+    components_used: list[str]
+    llm_calls: int = 0
+    llm_tokens: int = 0
+    llm_cost_usd: float = 0.0
+    external_api_calls: int = 0
+    findings_count: int = 0
+    findings_by_severity: dict[str, int] = Field(default_factory=dict)
+    findings_by_source: dict[str, int] = Field(default_factory=dict)
+    final_risk_level: str
+    outcome: str
+    # For precision/recall evaluation (manual ground truth labeling)
+    ground_truth_label: str | None = None  # "malicious" | "benign" | "unknown"
+    evaluation_notes: str | None = None
+
 class JobRequest(BaseModel):
     scan_id: str
     user_id: str
