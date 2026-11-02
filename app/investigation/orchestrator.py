@@ -3,10 +3,11 @@
 Flow: seed evidence -> Brand and Behavior agents in parallel -> planner ->
 targeted collection loop -> finding merge. Bounded by rounds and skill calls.
 """
+import operator
 import os
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Any, TypedDict
+from typing import Annotated, Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
@@ -35,8 +36,7 @@ class InvestigationState(TypedDict, total=False):
     brand: SkillEnvelope
     behavior: SkillEnvelope
     plan: PlanEnvelope
-    round: int
-    collected: list[SkillEnvelope]
+    collected: Annotated[list[SkillEnvelope], operator.add]
     findings: list[Finding]
     checks: list[str]
     artifacts: dict[str, Any]
@@ -127,9 +127,8 @@ async def _brand_verify(state: InvestigationState) -> dict[str, Any]:
             official_identity = obs.payload
             break
     
-    collected = list(state.get("collected") or [])
-    collected.append(envelope)
-    return {"brand_investigation_step": 2, "official_identity": official_identity, "collected": collected}
+    
+    return {"brand_investigation_step": 2, "official_identity": official_identity, "collected": [envelope]}
 
 
 async def _brand_compare(state: InvestigationState) -> dict[str, Any]:
@@ -152,10 +151,7 @@ async def _brand_compare(state: InvestigationState) -> dict[str, Any]:
             identity_comparison = obs.payload
             break
     
-    collected = list(state.get("collected") or [])
-    collected.append(envelope)
-    return {"brand_investigation_step": 3, "identity_comparison": identity_comparison, "collected": collected}
-
+    return {"brand_investigation_step": 3, "identity_comparison": identity_comparison, "collected": [envelope]}
 async def _brand_impersonation(state: InvestigationState) -> dict[str, Any]:
     """Step 4: Synthesize impersonation findings."""
     claimed_brands = state.get("claimed_brands") or []
@@ -180,8 +176,10 @@ async def _brand_impersonation(state: InvestigationState) -> dict[str, Any]:
     
     params = {
         "claimed_brand": claimed_brands[0].get("name", ""),
+        "claim_type": claimed_brands[0].get("claim_type", "identity"),
         "official_domains": official_identity.get("official_domains", []),
         "verification_status": official_identity.get("verification_status", "unknown"),
+        "verification_confidence": official_identity.get("verification_confidence", "low"),
         "identity_consistency": identity_comparison.get("consistency_status", "unknown"),
         "domain_relation": identity_comparison.get("domain_relation", "unknown"),
         "lookalike_rules": identity_comparison.get("lookalike_rules", []),
@@ -189,11 +187,10 @@ async def _brand_impersonation(state: InvestigationState) -> dict[str, Any]:
         "evidence_ids": evidence_ids,
     }
     
-    envelope = await state["executor"].run("investigate-brand-impersonation", params)
     
-    collected = list(state.get("collected") or [])
-    collected.append(envelope)
-    return {"brand": envelope, "brand_investigation_step": 4, "collected": collected}
+    envelope = await state["executor"].run("investigate-brand-impersonation", params)
+    return {"brand_investigation_step": 4, "brand": envelope, "collected": [envelope]}
+
 
 
 async def _behavior(state: InvestigationState) -> dict[str, Any]:
@@ -203,7 +200,7 @@ async def _behavior(state: InvestigationState) -> dict[str, Any]:
         executor=state["executor"],
         deterministic_findings=state.get("deterministic_findings") or [],
     )
-    return {"behavior": envelope}
+    return {"behavior": envelope, "collected": [envelope]}
 
 
 def _plan(state: InvestigationState) -> dict[str, Any]:
@@ -249,9 +246,11 @@ async def _execute(state: InvestigationState) -> dict[str, Any]:
 
 def _route_after_plan(state: InvestigationState) -> str:
     plan = state.get("plan")
-    if plan and plan.plan and int(state.get("round", 1)) < MAX_ROUNDS:
-        return "execute"
-    return "finalize"
+    current_round = int(state.get("round", 1))
+    # Finalize if no plan or at/above MAX_ROUNDS
+    if not plan or not plan.plan or current_round >= MAX_ROUNDS:
+        return "finalize"
+    return "execute"
 
 
 def _dedupe(findings: list[Finding]) -> list[Finding]:
@@ -293,6 +292,7 @@ async def _finalize(state: InvestigationState) -> dict[str, Any]:
                 )
             )
     findings = _dedupe(findings)
+    checks: list[str] = []  # ponytail: populate from executor validation when implemented
 
     from ..evidence_storage import save_evidence_items
 
@@ -322,22 +322,10 @@ async def _finalize(state: InvestigationState) -> dict[str, Any]:
             "findings": len(behavior.findings),
             "gaps": behavior.gaps[:10],
             "skills_loaded": (behavior.meta or {}).get("skills_loaded", [])[:10],
-        },
-        "plan": [
-            {"step": step.step, "agent": step.agent, "skill": step.skill, "reason": step.reason}
-            for step in (state.get("plan").plan if state.get("plan") else [])
-        ][:8],
-        "gaps": sorted({gap for env in (brand, behavior) for gap in env.gaps})[:20],
+        }
     }
-    checks = ["evidence_store", "investigation_planner"]
-    if brand.status == "completed":
-        checks.append("brand_agent")
-    if behavior.status == "completed":
-        checks.append("behavior_agent")
     return {"findings": findings, "checks": checks, "unavailable": unavailable, "artifacts": artifacts}
 
-
-@lru_cache(maxsize=1)
 def _compiled_graph():
     graph = StateGraph(InvestigationState)
     graph.add_node("seed", _seed)
@@ -351,16 +339,16 @@ def _compiled_graph():
     graph.add_node("finalize", _finalize)
     graph.add_edge(START, "seed")
     graph.add_edge("seed", "brand_identify")
+    graph.add_edge("seed", "behavior")
     graph.add_edge("brand_identify", "brand_verify")
     graph.add_edge("brand_verify", "brand_compare")
     graph.add_edge("brand_compare", "brand_impersonation")
-    graph.add_edge("brand_impersonation", "behavior")
+    graph.add_edge("brand_impersonation", "plan")
     graph.add_edge("behavior", "plan")
     graph.add_conditional_edges("plan", _route_after_plan, {"execute": "execute", "finalize": "finalize"})
     graph.add_edge("execute", "plan")
     graph.add_edge("finalize", END)
     return graph.compile()
-
 
 async def run_investigation(
     *,

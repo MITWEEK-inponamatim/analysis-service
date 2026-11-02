@@ -514,33 +514,45 @@ class EvidenceExecutor:
         title = str(self.browser.get("title") or "")
         text = str(self.browser.get("visible_text") or "")
         headings = [str(h) for h in (self.browser.get("headings") or [])]
+        meta = self.browser.get("meta") or {}
         
         brands_db = load_brands()
         claimed = []
+        
+        # Identity claim indicators (website presenting itself as the brand)
+        identity_keywords = ["login", "masuk", "sign in", "akun", "account", "resmi", "official", "portal"]
         
         for brand in brands_db:
             if len(brand) < 3:
                 continue
             pattern = rf"\b{re.escape(brand)}\b"
             
-            # Title match = high confidence
+            # Title + identity keyword = strong identity claim
+            title_lower = title.lower()
             if re.search(pattern, title, re.I):
+                is_identity_claim = any(kw in title_lower for kw in identity_keywords)
+                claim_type = "identity" if is_identity_claim else "mention"
+                
                 claimed.append({
                     "name": brand,
                     "confidence": "high",
-                    "claim_type": "identity",
+                    "claim_type": claim_type,
                     "evidence_sources": ["title"],
                     "context_snippet": title[:100],
                 })
                 break  # Take first high-confidence match
             
-            # Heading match = medium
+            # Heading match
             for heading in headings[:5]:
                 if re.search(pattern, heading, re.I):
+                    heading_lower = heading.lower()
+                    is_identity_claim = any(kw in heading_lower for kw in identity_keywords)
+                    claim_type = "identity" if is_identity_claim else "mention"
+                    
                     claimed.append({
                         "name": brand,
                         "confidence": "medium",
-                        "claim_type": "identity",
+                        "claim_type": claim_type,
                         "evidence_sources": ["heading"],
                         "context_snippet": heading[:100],
                     })
@@ -594,34 +606,61 @@ class EvidenceExecutor:
         
         def classify_authority(item: dict[str, Any]) -> str:
             url = item.get("url", "").lower()
-            if any(x in url for x in [".gov", ".go.id", "wikipedia.org"]):
-                return "high"
+            # First-party (self-mention) = highest authority
             if brand_name.lower() in url and url.startswith("https://"):
+                return "first_party"
+            # Government / official registries
+            if any(x in url for x in [".gov", ".go.id"]):
                 return "high"
-            if any(x in url for x in ["kompas.com", "detik.com", "cnnindonesia.com"]):
+            # Established news sources
+            if any(x in url for x in ["kompas.com", "detik.com", "cnnindonesia.com", "bloomberg.com", "reuters.com"]):
                 return "medium"
-            if any(x in url for x in [".blogspot", ".wordpress", "reddit.com"]):
+            # Low authority (blogs, forums)
+            if any(x in url for x in [".blogspot", ".wordpress", "reddit.com", "kaskus"]):
                 return "low"
             return "medium"
         
         domain_counts: dict[str, int] = {}
         sources = []
+        first_party_domains = set()
+        
         for item in all_results[:10]:
             url = item.get("url", "")
             host = det.normalize_host(url)
             if not host:
                 continue
+            
             authority = classify_authority(item)
-            if authority in ["high", "medium"]:
+            
+            # Track first-party mentions separately
+            if authority == "first_party":
+                first_party_domains.add(host)
+                domain_counts[host] = domain_counts.get(host, 0) + 2  # Weight higher
+            elif authority in ["high", "medium"]:
                 domain_counts[host] = domain_counts.get(host, 0) + 1
-                sources.append({
-                    "url": url[:500],
-                    "title": item.get("title", "")[:200],
-                    "authority": authority,
-                    "mentioned_domains": [host],
-                })
+            
+            sources.append({
+                "url": url[:500],
+                "title": item.get("title", "")[:200],
+                "authority": authority,
+                "mentioned_domains": [host],
+            })
         
-        verified = [d for d, cnt in domain_counts.items() if cnt >= 2]
+        # Verified if:
+        # 1. First-party confirmation exists, OR
+        # 2. Mentioned in 2+ independent high/medium sources
+        verified = []
+        verification_confidence = "low"
+        
+        if first_party_domains:
+            verified = list(first_party_domains)
+            verification_confidence = "high"
+        else:
+            # Require 2+ mentions from third-party sources
+            verified = [d for d, cnt in domain_counts.items() if cnt >= 2 and d not in first_party_domains]
+            if verified:
+                verification_confidence = "medium"  # Lower confidence without first-party
+        
         status = "verified" if verified else ("unverified" if domain_counts else "not_found")
         
         payload = {
@@ -629,15 +668,25 @@ class EvidenceExecutor:
             "official_domains": verified,
             "candidate_domains": list(domain_counts.keys()),
             "verification_status": status,
+            "verification_confidence": verification_confidence,
+            "first_party_confirmation": bool(first_party_domains),
             "sources": sources[:5],
             "queries_used": queries,
             "result_count": len(all_results),
         }
         
+        gaps = []
+        if status == "not_found":
+            gaps.append("no_search_results")
+        elif status == "unverified":
+            gaps.append("single_source_only")
+        elif not first_party_domains and status == "verified":
+            gaps.append("no_first_party_confirmation")
+        
         return self._envelope(
             "verify-official-domain",
             observations=[("brand", payload, "official_domain_verification")],
-            gaps=["no_search_results"] if status == "not_found" else (["single_source_only"] if status == "unverified" else []),
+            gaps=gaps,
         )
 
     async def _compare_brand_identity(self, params: dict[str, Any]) -> SkillEnvelope:
@@ -713,8 +762,10 @@ class EvidenceExecutor:
     async def _investigate_brand_impersonation(self, params: dict[str, Any]) -> SkillEnvelope:
         """Synthesize findings from prior brand steps."""
         claimed_brand = str(params.get("claimed_brand") or "")
+        claim_type = str(params.get("claim_type") or "identity")  # identity | mention
         official_domains = list(params.get("official_domains") or [])
         verification_status = str(params.get("verification_status") or "unknown")
+        verification_confidence = str(params.get("verification_confidence") or "low")
         identity_consistency = str(params.get("identity_consistency") or "unknown")
         domain_relation = str(params.get("domain_relation") or "unknown")
         lookalike_rules = list(params.get("lookalike_rules") or [])
@@ -728,7 +779,8 @@ class EvidenceExecutor:
         ]
         valid_ids = [eid for eid in evidence_ids if eid and self.store.exists(eid)]
         
-        if identity_consistency == "consistent":
+        # Skip if consistent OR if only brand mention (not identity claim)
+        if identity_consistency == "consistent" or claim_type == "mention":
             return self._envelope(
                 "investigate-brand-impersonation",
                 observations=[],
@@ -746,7 +798,16 @@ class EvidenceExecutor:
                 categories = set()
                 for form in forms:
                     categories.update(form.get("sensitive_categories", []))
-                if "password" in categories and "otp" in categories:
+                
+                # Check if third-party destination is known auth provider
+                third_party_dests = [form.get("action_host") for form in forms 
+                                     if form.get("destination") == "third_party_unknown"]
+                known_auth = any(any(provider in dest for provider in ["auth0.com", "okta.com", "accounts.google.com"])
+                                 for dest in third_party_dests if dest)
+                
+                if known_auth:
+                    severity = "medium"  # Lower if known auth provider
+                elif "password" in categories and "otp" in categories:
                     severity = "critical"
                 elif "password" in categories or "identity" in categories:
                     severity = "high"
@@ -757,12 +818,15 @@ class EvidenceExecutor:
         else:
             severity = "medium"
         
-        # Confidence
-        confidence = "high"
-        if verification_status == "unverified":
-            confidence = "medium"
-        elif verification_status in ["conflicting", "not_found"]:
-            confidence = "low"
+        # Impersonation confidence (separate from verification confidence)
+        impersonation_confidence = "medium"
+        
+        if verification_confidence == "low" or verification_status in ["conflicting", "not_found"]:
+            impersonation_confidence = "low"
+        elif domain_relation == "unrelated" and lookalike_rules and service_match_status == "inconsistent":
+            impersonation_confidence = "high"
+        elif verification_confidence == "high" and domain_relation == "unrelated":
+            impersonation_confidence = "high"
         
         # Interpretation
         parts = [f"Situs mengklaim identitas {claimed_brand} pada domain yang tidak terdaftar sebagai domain resmi."]
@@ -770,6 +834,8 @@ class EvidenceExecutor:
             parts.append(f"Domain menggunakan teknik lookalike: {', '.join(lookalike_rules[:3])}.")
         if service_match_status == "inconsistent":
             parts.append("Form kredensial mengarah ke domain pihak ketiga.")
+        if verification_confidence == "medium":
+            parts.append("Verifikasi domain resmi hanya dari sumber pihak ketiga.")
         interpretation = " ".join(parts)
         
         finding = self._finding(
@@ -778,7 +844,7 @@ class EvidenceExecutor:
             valid_ids,
             interpretation,
         )
-        finding.confidence = confidence  # type: ignore[attr-defined]
+        finding.confidence = impersonation_confidence  # type: ignore[attr-defined]
         
         return self._envelope(
             "investigate-brand-impersonation",
