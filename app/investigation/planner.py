@@ -32,7 +32,7 @@ def build_plan(
     round_number: int,
     max_rounds: int = MAX_ROUNDS,
 ) -> PlanEnvelope:
-    if round_number > max_rounds:
+    if round_number >= max_rounds:
         return PlanEnvelope(status="stopped", stop_reason="max_rounds_reached")
 
     browser = executor.browser
