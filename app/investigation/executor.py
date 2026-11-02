@@ -519,8 +519,14 @@ class EvidenceExecutor:
         brands_db = load_brands()
         claimed = []
         
-        # Identity claim indicators (website presenting itself as the brand)
-        identity_keywords = ["login", "masuk", "sign in", "akun", "account", "resmi", "official", "portal"]
+        # Identity claim indicators (multi-language support)
+        identity_keywords = {
+            "id": ["login", "masuk", "sign in", "akun", "account", "resmi", "official", "portal", "banking", "perbankan"],
+            "en": ["login", "sign in", "account", "official", "portal", "banking", "authenticate"],
+            "zh": ["登录", "账户", "官方", "银行"],  # login, account, official, bank
+        }
+        # Flatten all keywords
+        all_keywords = [kw for lang_kws in identity_keywords.values() for kw in lang_kws]
         
         for brand in brands_db:
             if len(brand) < 3:
@@ -530,7 +536,7 @@ class EvidenceExecutor:
             # Title + identity keyword = strong identity claim
             title_lower = title.lower()
             if re.search(pattern, title, re.I):
-                is_identity_claim = any(kw in title_lower for kw in identity_keywords)
+                is_identity_claim = any(kw in title_lower for kw in all_keywords)
                 claim_type = "identity" if is_identity_claim else "mention"
                 
                 claimed.append({
@@ -546,7 +552,7 @@ class EvidenceExecutor:
             for heading in headings[:5]:
                 if re.search(pattern, heading, re.I):
                     heading_lower = heading.lower()
-                    is_identity_claim = any(kw in heading_lower for kw in identity_keywords)
+                    is_identity_claim = any(kw in heading_lower for kw in all_keywords)
                     claim_type = "identity" if is_identity_claim else "mention"
                     
                     claimed.append({
@@ -557,6 +563,27 @@ class EvidenceExecutor:
                         "context_snippet": heading[:100],
                     })
                     break
+            if claimed:
+                break
+            
+            # Meta tag check (og:site_name, description)
+            if not claimed:
+                meta_desc = str(meta.get("description", "")).lower()
+                meta_site = str(meta.get("og:site_name", "")).lower()
+                meta_combined = meta_desc + " " + meta_site
+                
+                if re.search(pattern, meta_combined, re.I):
+                    is_identity_claim = any(kw in meta_combined for kw in all_keywords)
+                    claim_type = "identity" if is_identity_claim else "mention"
+                    
+                    claimed.append({
+                        "name": brand,
+                        "confidence": "low",
+                        "claim_type": claim_type,
+                        "evidence_sources": ["meta"],
+                        "context_snippet": (meta_desc or meta_site)[:100],
+                    })
+            
             if claimed:
                 break
         
