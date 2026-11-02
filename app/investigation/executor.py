@@ -606,9 +606,17 @@ class EvidenceExecutor:
         
         def classify_authority(item: dict[str, Any]) -> str:
             url = item.get("url", "").lower()
-            # First-party (self-mention) = highest authority
-            if brand_name.lower() in url and url.startswith("https://"):
+            result_domain = det.normalize_host(url)
+            
+            # First-party = official domain self-mentioning (exact match from brand_guard)
+            # Load known official domains for this brand
+            from .. import brand_guard
+            brands = brand_guard.load_brands()
+            official_domains = brands.get(brand_name.lower(), ())
+            
+            if result_domain in official_domains:
                 return "first_party"
+            
             # Government / official registries
             if any(x in url for x in [".gov", ".go.id"]):
                 return "high"
@@ -799,10 +807,16 @@ class EvidenceExecutor:
                 for form in forms:
                     categories.update(form.get("sensitive_categories", []))
                 
-                # Check if third-party destination is known auth provider
+                # Check if third-party destination is known auth provider (exact match)
                 third_party_dests = [form.get("action_host") for form in forms 
                                      if form.get("destination") == "third_party_unknown"]
-                known_auth = any(any(provider in dest for provider in ["auth0.com", "okta.com", "accounts.google.com"])
+                
+                known_auth_providers = {
+                    "auth0.com", "okta.com", "accounts.google.com",
+                    "login.microsoftonline.com", "firebase.google.com"
+                }
+                
+                known_auth = any(det.extract_registrable_domain(dest) in known_auth_providers
                                  for dest in third_party_dests if dest)
                 
                 if known_auth:
