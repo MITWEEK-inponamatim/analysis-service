@@ -36,6 +36,7 @@ class InvestigationState(TypedDict, total=False):
     brand: SkillEnvelope
     behavior: SkillEnvelope
     plan: PlanEnvelope
+    round: int
     collected: Annotated[list[SkillEnvelope], operator.add]
     findings: list[Finding]
     checks: list[str]
@@ -247,8 +248,8 @@ async def _execute(state: InvestigationState) -> dict[str, Any]:
 def _route_after_plan(state: InvestigationState) -> str:
     plan = state.get("plan")
     current_round = int(state.get("round", 1))
-    # Finalize if no plan or at/above MAX_ROUNDS
-    if not plan or not plan.plan or current_round >= MAX_ROUNDS:
+    # Finalize if no plan, stopped, or at/above MAX_ROUNDS
+    if not plan or plan.status == "stopped" or not plan.plan or current_round >= MAX_ROUNDS:
         return "finalize"
     return "execute"
 
