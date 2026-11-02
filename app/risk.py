@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import Any
 
-from .schemas import Finding, ScanReport
+from .schemas import Finding, ScanReport, Coverage, ComponentStatus
 
 CONFIRMED_SOURCES = {"safe_browsing", "virustotal"}
 
@@ -40,6 +40,61 @@ POSITIVE_CHECKS = {
 }
 LEVEL_RANK = {"unknown": 0, "low": 1, "medium": 2, "high": 3}
 CLEAN_EVIDENCE_MIN_CHECKS = 3
+
+
+class RiskEngine:
+    """Final risk assessment component.
+
+    Calibrated scoring model that separates finding severity from overall URL classification.
+    Deterministic: no LLM input. Coverage-aware: weak sources capped when checks < threshold.
+    
+    Usage:
+        engine = RiskEngine()
+        report = engine.assess(scan_id, scan_type, findings, checks_run, checks_unavailable)
+    """
+
+    def __init__(self):
+        self.severity_weights = SEVERITY_WEIGHT
+        self.confidence_weights = CONFIDENCE_WEIGHT
+        self.source_weights = SOURCE_WEIGHT
+        self.confirmed_sources = CONFIRMED_SOURCES
+        self.positive_checks = POSITIVE_CHECKS
+        self.clean_evidence_min_checks = CLEAN_EVIDENCE_MIN_CHECKS
+
+    def assess(
+        self,
+        scan_id: str,
+        scan_type: str,
+        findings: list[Finding],
+        checks_run: list[str],
+        checks_unavailable: list[str],
+        llm_usage: dict[str, Any] | None = None,
+        limitations: list[str] | None = None,
+        artifacts: dict[str, Any] | None = None,
+        confidence: str | None = None,
+    ) -> ScanReport:
+        """Produce final scan report from findings and coverage.
+        
+        Separates finding.severity (individual threat level) from 
+        scan.risk.level (overall URL classification).
+        """
+        return assess(
+            scan_id, scan_type, findings, checks_run, checks_unavailable,
+            llm_usage, limitations, artifacts, confidence
+        )
+
+    def fail_report(
+        self,
+        scan_id: str,
+        scan_type: str,
+        code: str,
+        message: str,
+        checks_run: list[str] | None = None,
+        checks_unavailable: list[str] | None = None,
+        limitations: list[str] | None = None,
+    ) -> ScanReport:
+        """Build scan_failed report when scanner cannot complete."""
+        return fail_report(scan_id, scan_type, code, message, checks_run, checks_unavailable, limitations)
 
 
 def positive_check_count(checks_run: list[str]) -> int:
@@ -125,11 +180,27 @@ def assess(
     coverage_summary = f"{len(checks_run)} pemeriksaan berjalan; {len(checks_unavailable)} tidak tersedia."
     if positives < 2:
         coverage_summary += " Cakupan sumber independen masih tipis."
+    
+    # Build component status list
+    components = []
+    for check in checks_run:
+        components.append(ComponentStatus(name=check, status="available"))
+    for check in checks_unavailable:
+        components.append(ComponentStatus(name=check, status="unavailable", reason="Service unavailable or timed out"))
+    
+    coverage = Coverage(
+        checks_run=checks_run,
+        checks_unavailable=checks_unavailable,
+        components=components,
+        summary=coverage_summary,
+        positive_checks=positives,
+        total_checks_attempted=len(checks_run) + len(checks_unavailable)
+    )
+    
     return ScanReport(
         scan_id=scan_id, type=scan_type, outcome=outcome,
         risk={"level": level, "score": score, "confidence": confidence or ("medium" if checks_run else "low"),
-              "coverage": {"checks_run": checks_run, "checks_unavailable": checks_unavailable,
-                           "summary": coverage_summary}},
+              "coverage": coverage.model_dump()},
         findings=findings, evidence_summary="; ".join(f.indicator for f in findings) or "Tidak ada indikator yang cukup untuk kesimpulan.",
         recommended_actions=actions, limitations=list(limitations or []),
         artifacts=artifacts or {"screenshot_path": None, "redirect_chain": []},

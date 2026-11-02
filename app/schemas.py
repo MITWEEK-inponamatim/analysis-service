@@ -5,6 +5,21 @@ ScanType = Literal["url", "message", "phone", "image", "application"]
 PhoneRegion = Literal["ID", "MY", "SG", "US", "GB"]
 ReportStatus = Literal["pending", "verified", "rejected", "rejected_spam"]
 
+class ComponentStatus(BaseModel):
+    """Component availability status for scan coverage tracking."""
+    name: str
+    status: Literal["available", "unavailable", "partial", "not_attempted"]
+    reason: str | None = None
+
+class Coverage(BaseModel):
+    """Scan coverage and component availability metrics."""
+    checks_run: list[str]
+    checks_unavailable: list[str]
+    components: list[ComponentStatus] = Field(default_factory=list)
+    summary: str
+    positive_checks: int = 0
+    total_checks_attempted: int = 0
+
 class JobRequest(BaseModel):
     scan_id: str
     user_id: str
