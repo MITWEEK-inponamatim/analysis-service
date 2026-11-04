@@ -33,7 +33,8 @@ class SkillEnvelope(BaseModel):
     gaps: list[str] = Field(default_factory=list)
     unavailable: list[str] = Field(default_factory=list)
     meta: dict[str, Any] = Field(default_factory=dict)
-
+    tool_calls: int = 0
+    tokens: int = 0
 
 class AgentFinding(BaseModel):
     indicator: str = Field(max_length=500)

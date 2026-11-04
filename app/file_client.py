@@ -64,3 +64,38 @@ async def analyze_file(kind: str, data: bytes, filename: str = "", mime: str = "
     if not isinstance(payload, dict) or "available" not in payload:
         return {"available": False, "reason": "invalid_worker_response", "features": {}, "incomplete_reasons": ["invalid_worker_response"]}
     return payload
+
+
+async def decompile_apk_via_worker(data: bytes) -> dict:
+    """
+    Decompile APK using jadx via file worker.
+    
+    Returns decompiled dict with manifest, classes, code_patterns, etc.
+    Never raises: failed decompilation returns empty dict.
+    """
+    base = os.getenv("FILE_WORKER_URL", "").strip().rstrip("/")
+    if not base:
+        # Local fallback: run jadx directly (requires jadx in PATH)
+        from .jadx_decompile import decompile_apk
+        try:
+            return await decompile_apk(data, timeout=60)
+        except Exception:
+            return {}
+    
+    service_key = os.getenv("SERVICE_API_KEY", "")
+    if not service_key:
+        return {}
+    
+    headers = {
+        "X-Service-Key": file_service_key(service_key),
+        "Content-Type": "application/vnd.android.package-archive",
+    }
+    
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(70, connect=5)) as client:
+            response = await client.post(f"{base}/internal/v1/apk/decompile", headers=headers, content=data)
+            response.raise_for_status()
+            payload = response.json()
+            return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}

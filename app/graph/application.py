@@ -15,6 +15,7 @@ class ApplicationState(TypedDict, total=False):
     digest: str
     consent: bool
     features: dict
+    decompiled: dict  # NEW: jadx decompilation output
     findings: list
     checks: list[str]
     unavailable: list[str]
@@ -22,6 +23,8 @@ class ApplicationState(TypedDict, total=False):
     artifacts: dict
     usage: dict
     checkpointer_unavailable: bool
+    investigation_enabled: bool  # NEW: gate decision
+    gate_reasons: list[str]  # NEW: gate reasons
     report: Any
 
 
@@ -216,9 +219,96 @@ def build_application_graph(checkpointer=None):
             extend_unique(unavailable, ["mobsf"])
             extend_unique(limitations, ["MobSF tidak dipakai karena pengguna tidak menyetujui pengiriman sampel ke layanan eksternal."])
         else:
-            extend_unique(unavailable, ["mobsf"])
-        extend_unique(unavailable, ["jadx"])
-        return {"findings": findings, "checks": checks, "unavailable": unavailable, "limitations": limitations, "features": features}
+    async def jadx_decompile(state: ApplicationState):
+        """NEW: Decompile APK using jadx-cli via file_worker."""
+        from ..file_client import decompile_apk_via_worker
+        
+        data = state.get("data") or b""
+        checks = list(state.get("checks") or [])
+        unavailable = list(state.get("unavailable") or [])
+        
+        try:
+            decompiled = await decompile_apk_via_worker(data)
+            if decompiled and decompiled.get("package_name"):
+                extend_unique(checks, ["jadx_decompile"])
+            else:
+                extend_unique(unavailable, ["jadx_decompile"])
+        except Exception:
+            extend_unique(unavailable, ["jadx_decompile"])
+            decompiled = {}
+        
+        return {"decompiled": decompiled, "checks": checks, "unavailable": unavailable}
+    
+    async def code_pattern_analysis(state: ApplicationState):
+        """NEW: Deterministic code pattern rules."""
+        from ..apk_deterministic import code_pattern_findings
+        
+        findings = list(state.get("findings") or [])
+        features = state.get("features") or {}
+        decompiled = state.get("decompiled") or {}
+        
+        # Run deterministic code correlation rules
+        code_findings = code_pattern_findings(
+            manifest=features.get("manifest", {}),
+            decompiled=decompiled,
+        )
+        
+        findings.extend(code_findings)
+        
+        return {"findings": findings}
+    
+    def investigation_gate_check(state: ApplicationState):
+        """NEW: Decide whether to run agent investigation."""
+        from ..apk_deterministic import investigation_gate
+        
+        findings = state.get("findings") or []
+        features = state.get("features") or {}
+        decompiled = state.get("decompiled") or {}
+        unavailable = state.get("unavailable") or []
+        
+        enabled, reasons = investigation_gate(
+            findings=findings,
+            manifest=features.get("manifest", {}),
+            decompiled=decompiled,
+            unavailable=unavailable,
+        )
+        
+        return {"investigation_enabled": enabled, "gate_reasons": reasons}
+    
+    async def run_investigation(state: ApplicationState):
+        """NEW: Run hybrid dual-agent investigation."""
+        from ..investigation.apk_orchestrator import run_apk_investigation
+        
+        result = await run_apk_investigation(
+            scan_id=state["scan_id"],
+            user_id=state["user_id"],
+            features=state.get("features") or {},
+            decompiled=state.get("decompiled") or {},
+            deterministic_findings=state.get("findings") or [],
+            gate_reasons=state.get("gate_reasons") or [],
+            unavailable=state.get("unavailable") or [],
+        )
+        
+        findings = list(state.get("findings") or [])
+        findings.extend(result.findings)
+        
+        artifacts = dict(state.get("artifacts") or {})
+        artifacts.update(result.artifacts)
+        
+        usage = dict(state.get("usage") or {})
+        usage["investigation_tokens"] = result.usage.get("tokens", 0)
+        
+        unavailable = list(state.get("unavailable") or [])
+        unavailable.extend(result.unavailable)
+        
+        return {"findings": findings, "artifacts": artifacts, "usage": usage, "unavailable": unavailable}
+    
+    def after_investigation_gate(state: ApplicationState):
+        """Route based on gate decision."""
+        if state.get("investigation_enabled"):
+            return "run_investigation"
+        else:
+            return "dynamic_analysis"
 
     async def dynamic_analysis(state: ApplicationState):
         from .. import dynamic
@@ -294,20 +384,32 @@ def build_application_graph(checkpointer=None):
 
     def after_precheck(state: ApplicationState):
         return "assess" if state.get("report") is not None else "reputation"
-
     graph = StateGraph(ApplicationState)
     graph.add_node("load_object", load)
     graph.add_node("precheck", precheck)
     graph.add_node("reputation", reputation)
     graph.add_node("static_analysis", static_analysis)
+    graph.add_node("jadx_decompile", jadx_decompile)
+    graph.add_node("code_pattern_analysis", code_pattern_analysis)
+    graph.add_node("investigation_gate", investigation_gate_check)
+    graph.add_node("run_investigation", run_investigation)
     graph.add_node("dynamic_analysis", dynamic_analysis)
     graph.add_node("analyze", analyze)
     graph.add_node("assess", assess_state)
+    
     graph.add_edge(START, "load_object")
     graph.add_conditional_edges("load_object", after_load, {"precheck": "precheck", "assess": "assess"})
     graph.add_conditional_edges("precheck", after_precheck, {"reputation": "reputation", "assess": "assess"})
     graph.add_edge("reputation", "static_analysis")
-    graph.add_edge("static_analysis", "dynamic_analysis")
+    graph.add_edge("static_analysis", "jadx_decompile")
+    graph.add_edge("jadx_decompile", "code_pattern_analysis")
+    graph.add_edge("code_pattern_analysis", "investigation_gate")
+    graph.add_conditional_edges(
+        "investigation_gate",
+        after_investigation_gate,
+        {"run_investigation": "run_investigation", "dynamic_analysis": "dynamic_analysis"}
+    )
+    graph.add_edge("run_investigation", "dynamic_analysis")
     graph.add_edge("dynamic_analysis", "analyze")
     graph.add_edge("analyze", "assess")
     graph.add_edge("assess", END)

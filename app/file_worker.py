@@ -77,7 +77,51 @@ async def health(x_service_key: str | None = Header(default=None)):
     return {"status": "ok", "concurrency": MAX_CONCURRENCY}
 
 
+
 @app.post("/internal/v1/analyze/application")
 async def analyze_application(request: Request, x_service_key: str | None = Header(default=None)):
     require_worker_key(x_service_key)
     return await run_extraction("application", await read_limited_body(request))
+
+
+@app.post("/internal/v1/apk/decompile")
+async def decompile_apk_endpoint(request: Request, x_service_key: str | None = Header(default=None)):
+    """NEW: Decompile APK using jadx-cli."""
+    require_worker_key(x_service_key)
+    
+    data = await read_limited_body(request)
+    
+    from .jadx_decompile import decompile_apk
+    
+    async with semaphore:
+        try:
+            result = await asyncio.wait_for(decompile_apk(data, timeout=60), timeout=70)
+            return result
+        except asyncio.TimeoutError:
+            return {
+                "manifest": {},
+                "package_name": "unknown",
+                "classes": [],
+                "native_libs": {},
+                "key_sources": {},
+                "code_patterns": {},
+                "api_calls": {},
+                "extracted_urls": [],
+                "obfuscation_detected": False,
+                "code_index": {},
+                "error": "decompilation_timeout",
+            }
+        except Exception as e:
+            return {
+                "manifest": {},
+                "package_name": "unknown",
+                "classes": [],
+                "native_libs": {},
+                "key_sources": {},
+                "code_patterns": {},
+                "api_calls": {},
+                "extracted_urls": [],
+                "obfuscation_detected": False,
+                "code_index": {},
+                "error": str(e)[:200],
+            }
