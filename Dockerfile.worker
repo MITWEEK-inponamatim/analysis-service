@@ -1,10 +1,7 @@
 FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 TMPDIR=/tmp HOME=/tmp MPLCONFIGDIR=/tmp/mpl
 WORKDIR /app
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-ind tesseract-ocr-eng \
-    && rm -rf /var/lib/apt/lists/* \
-    && useradd --create-home --uid 10001 app
+RUN useradd --create-home --uid 10001 app
 COPY requirements.worker.txt .
 RUN pip install --no-cache-dir --retries 10 --timeout 120 -r requirements.worker.txt
 COPY app ./app

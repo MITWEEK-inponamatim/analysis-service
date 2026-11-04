@@ -19,6 +19,9 @@ import httpx
 ALLOWED_STATUSES = {"pending", "verified", "rejected", "rejected_spam"}
 
 # Stored value -> Indonesian label used in report text.
+# ``phishing`` and ``pharming`` arrive from the community report form on /community/phone, which
+# offers the board's five categories; without a label here a verified phishing report would be
+# described as ``lainnya`` in the scan result.
 REPORT_CATEGORIES = {
     "penipuan": "penipuan",
     "spam": "spam",
@@ -26,6 +29,8 @@ REPORT_CATEGORIES = {
     "penagih_utang": "penagih utang",
     "peniruan_identitas": "peniruan identitas",
     "lainnya": "lainnya",
+    "phishing": "phishing",
+    "pharming": "pharming",
 }
 
 MAX_NOTE_LENGTH = 280

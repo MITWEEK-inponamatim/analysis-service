@@ -78,7 +78,22 @@ def test_rejected_reports_are_not_evidence():
     assert summary["verified"] == 0
     assert summary["pending"] == 0
     assert summary["categories"] == []
+    assert summary["distinct_reporters"] == 0
+    assert summary["last_report_days"] is None
     assert phone_scanner._report_finding("+6281234567890", rows) is None
+
+
+def test_rejected_reports_do_not_inflate_reporters_or_recency():
+    # The sentence the user reads must match the reviews the checker shows: an account whose
+    # report was deleted as spam is neither a corroborating reporter nor a recent report.
+    rows = [_report("verified", "penipuan", "u1", days_ago=9), _report("rejected_spam", "penipuan", "u2")]
+    summary = phone_scanner.summarize_reports(rows)
+    assert summary["reports"] == 2
+    assert summary["distinct_reporters"] == 1
+    assert summary["last_report_days"] == 9
+    found = phone_scanner._report_finding("+6281234567890", rows)
+    assert "1 pelapor berbeda" in found.indicator
+    assert "9 hari lalu" in found.indicator
 
 
 def test_two_verified_reports_from_two_reporters_reach_high():

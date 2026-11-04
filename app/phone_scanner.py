@@ -26,8 +26,11 @@ except Exception:  # pragma: no cover - exercised only when the dependency is ab
 DIGITS = re.compile(r"\D+")
 
 REGION_CALLING_CODES = {
-    "ID": "62", "MY": "60", "SG": "65", "US": "1", "GB": "44",
+    "ID": "62",
 }
+
+INDONESIA_COUNTRY_CODE = 62
+INDONESIA_REGION = "ID"
 
 LINE_TYPES = {
     "MOBILE": "mobile",
@@ -57,6 +60,7 @@ class PhoneNumber:
     e164: str = ""
     valid: bool = False
     possible: bool = False
+    domestic: bool = False
     region: str = ""
     national: str = ""
     line_type: str = "unknown"
@@ -65,15 +69,35 @@ class PhoneNumber:
     reasons: list[str] = field(default_factory=list)
 
 
+def canonical_digits(number: str) -> str:
+    """Digits this number should be stored and searched by.
+
+    0812…, 62812… and +62 0812… are one and the same subscriber. The third form still carries
+    the trunk 0 after the country code, and storing it would split one number across two keys —
+    so a report made under one spelling would be invisible to a search using another. Indonesian
+    subscriber numbers never start with 0 once the +62 is there, which makes that 0 safe to drop.
+    """
+    digits = DIGITS.sub("", (number or "").strip())
+    if digits.startswith("62"):
+        subscriber = digits[2:]
+        return "62" + (subscriber[1:] if subscriber.startswith("0") else subscriber)
+    return digits
+
+
 def normalize_number(number: str, default_region: str = "ID") -> PhoneNumber:
-    region = (default_region or "ID").upper()
+    # Scope is Indonesian numbers, so the caller-supplied region never decides how the number is
+    # parsed. Foreign numbers are caught by the +62 country-code check below, not by trusting
+    # this field — otherwise region="SG" would quietly make +65 numbers look normal.
+    region = INDONESIA_REGION
+    digits = canonical_digits(number)
+    parse_target = f"+{digits}" if digits.startswith("62") else (number or "").strip()
     result = PhoneNumber(input=number, region=region)
     if not PHONENUMBERS_AVAILABLE:
         return _fallback_normalize(result, region)
 
     result.parsed_by = "phonenumbers"
     try:
-        parsed = phonenumbers.parse(number, region)
+        parsed = phonenumbers.parse(parse_target, region)
     except Exception:
         result.reasons.append("unparseable")
         return _fallback_normalize(result, region)
@@ -82,6 +106,7 @@ def normalize_number(number: str, default_region: str = "ID") -> PhoneNumber:
     result.valid = bool(phonenumbers.is_valid_number(parsed))
     result.e164 = phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
     result.national = phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.NATIONAL)
+    result.domestic = getattr(parsed, "country_code", None) == INDONESIA_COUNTRY_CODE
     result.region = phonenumbers.region_code_for_number(parsed) or region
     result.line_type = _line_type(parsed)
     try:
@@ -90,6 +115,8 @@ def normalize_number(number: str, default_region: str = "ID") -> PhoneNumber:
         result.carrier = ""
     if not result.valid:
         result.reasons.append("invalid_for_region")
+    if not result.domestic:
+        result.reasons.append("not_indonesia")
     if result.line_type == "premium_rate":
         result.reasons.append("premium_rate")
     return result
@@ -109,23 +136,29 @@ def _line_type(parsed) -> str:
 
 def _fallback_normalize(result: PhoneNumber, region: str) -> PhoneNumber:
     """Deterministic E.164-ish normalisation used when ``phonenumbers`` is unavailable."""
-    digits = DIGITS.sub("", result.input)
+    digits = canonical_digits(result.input)
     if not digits:
         result.reasons.append("unparseable")
         return result
     result.parsed_by = "fallback"
-    if result.input.strip().startswith("+"):
+    calling_code = REGION_CALLING_CODES.get(region, "")
+    if calling_code and digits.startswith(calling_code):
+        e164_digits = digits
+    elif (result.input or "").strip().startswith("+"):
         e164_digits = digits
     elif digits.startswith("0"):
-        e164_digits = REGION_CALLING_CODES.get(region, "") + digits[1:]
+        e164_digits = calling_code + digits[1:]
     else:
-        e164_digits = REGION_CALLING_CODES.get(region, "") + digits
+        e164_digits = calling_code + digits
     result.e164 = f"+{e164_digits}"
     result.national = digits
+    result.domestic = e164_digits.startswith("62")
     result.possible = 8 <= len(e164_digits) <= 15
     result.valid = result.possible
     if not result.valid:
         result.reasons.append("invalid_length")
+    if not result.domestic:
+        result.reasons.append("not_indonesia")
     return result
 
 
@@ -140,6 +173,7 @@ def normalize_payload(number: str, default_region: str = "ID") -> dict[str, Any]
         "input": parsed.input,
         "e164": parsed.e164,
         "valid": parsed.valid,
+        "domestic": parsed.domestic,
         "possible": parsed.possible,
         "region": parsed.region,
         "line_type": parsed.line_type,
@@ -157,24 +191,35 @@ def _supabase_config() -> tuple[str, str] | None:
     return url, secret
 
 
+REPORT_COLUMNS = "id,category,source,status,created_at,reported_by,evidence_url"
+# The evidence column only exists after the 2026-11-04 migration, which is applied by hand in the
+# hosted SQL Editor. PostgREST rejects a whole select for one unknown column, and that would read
+# as "community reports unavailable" and hide every report — so the read retries without it.
+REPORT_COLUMNS_WITHOUT_EVIDENCE = "id,category,source,status,created_at,reported_by"
+
+
 async def fetch_reports(e164: str, limit: int = 20) -> list[dict[str, Any]] | None:
     """Return community reports for a number, or None when the data source is unavailable."""
     config = _supabase_config()
     if not config or not e164:
         return None
     url, secret = config
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.get(
-                f"{url}/rest/v1/phone_reports",
-                params={"number_e164": f"eq.{e164}", "select": "category,source,status,created_at,reported_by", "order": "created_at.desc", "limit": str(limit)},
-                headers={"apikey": secret, "Authorization": f"Bearer {secret}"},
-            )
-            response.raise_for_status()
-            rows = response.json()
-    except Exception:
-        return None
-    return rows if isinstance(rows, list) else None
+    for attempt, columns in enumerate((REPORT_COLUMNS, REPORT_COLUMNS_WITHOUT_EVIDENCE)):
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                response = await client.get(
+                    f"{url}/rest/v1/phone_reports",
+                    params={"number_e164": f"eq.{e164}", "select": columns, "order": "created_at.desc", "limit": str(limit)},
+                    headers={"apikey": secret, "Authorization": f"Bearer {secret}"},
+                )
+                if response.status_code != 200 and attempt == 0:
+                    continue
+                response.raise_for_status()
+                rows = response.json()
+        except Exception:
+            continue
+        return rows if isinstance(rows, list) else None
+    return None
 
 
 def _age_days(value: Any):
@@ -196,13 +241,12 @@ def summarize_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
     """Explainable trust summary: distinct reporters, verification, recency, categories."""
     verified = [row for row in reports if str(row.get("status", "")).lower() in {"verified", "confirmed"}]
     pending = [row for row in reports if str(row.get("status", "")).lower() not in {"verified", "confirmed", "rejected", "rejected_spam"}]
-    reporters = {str(row.get("reported_by")) for row in reports if row.get("reported_by")}
-    categories = sorted({
-        category_label(row.get("category"))
-        for row in reports
-        if str(row.get("status", "")).lower() not in {"rejected", "rejected_spam"}
-    })
-    ages = [age for age in (_age_days(row.get("created_at")) for row in reports) if age is not None]
+    # Rejected rows are removed by moderation, so they must not lend weight to the sentence the
+    # user reads: "3 pelapor berbeda" would count accounts whose report was deleted as spam.
+    kept = [row for row in reports if str(row.get("status", "")).lower() not in {"rejected", "rejected_spam"}]
+    reporters = {str(row.get("reported_by")) for row in kept if row.get("reported_by")}
+    categories = sorted({category_label(row.get("category")) for row in kept})
+    ages = [age for age in (_age_days(row.get("created_at")) for row in kept) if age is not None]
     return {
         "reports": len(reports),
         "verified": len(verified),
@@ -211,6 +255,26 @@ def summarize_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
         "categories": categories,
         "last_report_days": min(ages) if ages else None,
     }
+
+
+def review_cards(reports: list[dict[str, Any]], limit: int = 20) -> list[dict[str, Any]]:
+    """Community reviews shaped for display: never echoes ``reported_by``.
+
+    Rejected rows are moderation outcomes, not opinions, so they stay out of the list.
+    """
+    cards: list[dict[str, Any]] = []
+    for row in reports:
+        status = str(row.get("status", "")).lower()
+        if status not in {"pending", "verified"}:
+            continue
+        cards.append({
+            "id": str(row.get("id") or ""),
+            "category": category_label(row.get("category")),
+            "status": status,
+            "age_days": _age_days(row.get("created_at")),
+            "evidence_url": str(row.get("evidence_url") or "") or None,
+        })
+    return cards[:limit]
 
 
 def _report_finding(e164: str, reports: list[dict[str, Any]]):

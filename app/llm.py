@@ -44,17 +44,3 @@ def message_analyzer():
 
 def url_analyzer():
     return message_analyzer()
-
-
-def vision_model() -> str:
-    return os.getenv("OPENAI_VISION_MODEL", "").strip()
-
-
-def vision_analyzer():
-    """Vision analyzer, only when OPENAI_VISION_MODEL is explicitly configured (handoff 7.5)."""
-    if not os.getenv("OPENAI_API_KEY"):
-        return None
-    model = vision_model()
-    if not model:
-        return None
-    return ChatOpenAI(**_options(model)).with_structured_output(LLMAnalysis, include_raw=True)

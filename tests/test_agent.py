@@ -80,7 +80,7 @@ def test_agent_executes_whitelisted_tool_calls(monkeypatch):
     result = asyncio.run(agent.run_agent(_context(), system_prompt="analyze", payload="kirim OTP"))
     assert result.tool_calls == 1
     assert result.rounds == 2
-    assert len(model.bound_tools) == 9
+    assert len(model.bound_tools) == 8
 
 
 def test_agent_stops_at_the_iteration_limit(monkeypatch):

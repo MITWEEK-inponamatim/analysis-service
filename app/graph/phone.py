@@ -19,13 +19,14 @@ class PhoneState(TypedDict, total=False):
     limitations: list[str]
     confidence: str
     evidence_suffix: str
+    reviews: list
     checkpointer_unavailable: bool
     report: Any
 
 
 def build_phone_graph(checkpointer=None):
     from ..graph.runner import merge_checkpoint_flag
-    from ..phone_scanner import PHONE_LIMITATIONS, PHONENUMBERS_AVAILABLE, _report_finding, fetch_reports, normalize_number
+    from ..phone_scanner import PHONE_LIMITATIONS, PHONENUMBERS_AVAILABLE, _report_finding, fetch_reports, normalize_number, review_cards
     from ..reporting import extend_unique
     from ..risk import assess, finding
 
@@ -38,6 +39,16 @@ def build_phone_graph(checkpointer=None):
         if not PHONENUMBERS_AVAILABLE:
             unavailable.append("phone_number_library")
             limitations.append("Pustaka normalisasi nomor tidak tersedia; normalisasi memakai aturan sederhana dan bisa kurang akurat.")
+        if not parsed.domestic:
+            findings.append(finding(
+                "Deteksi nomor dibatasi untuk nomor Indonesia (+62); nomor ini berada di luar cakupan sehingga tidak diperiksa lebih lanjut.",
+                "phone_validation", "info",
+                {"e164": parsed.e164, "reasons": parsed.reasons}, confidence="medium",
+            ))
+            limitations.append("Nomor di luar +62 tidak diproses, sehingga tidak ada reputasi yang dapat ditampilkan.")
+            return {"findings": findings, "checks": checks, "unavailable": unavailable, "limitations": limitations,
+                    "e164": "", "confidence": "low", "carrier": "", "line_type": "unknown",
+                    "region": state.get("default_region", "ID")}
         if not parsed.valid:
             findings.append(finding(
                 "Nomor tidak valid atau tidak wajar untuk region yang dipilih; hasil tidak dapat diverifikasi.",
@@ -68,26 +79,30 @@ def build_phone_graph(checkpointer=None):
         if rows is None:
             extend_unique(unavailable, ["phone_reports"])
             extend_unique(limitations, ["Sumber laporan komunitas tidak dapat dibaca, sehingga reputasi nomor belum diperiksa."])
+            return {"findings": findings, "checks": checks, "unavailable": unavailable, "limitations": limitations,
+                    "confidence": confidence, "reviews": []}
+        extend_unique(checks, ["phone_reports"])
+        report_finding = _report_finding(state.get("e164", ""), rows)
+        if report_finding:
+            findings.append(report_finding)
+            confidence = "medium"
         else:
-            extend_unique(checks, ["phone_reports"])
-            report_finding = _report_finding(state.get("e164", ""), rows)
-            if report_finding:
-                findings.append(report_finding)
-                confidence = "medium"
-            else:
-                extend_unique(limitations, ["Tidak ada laporan komunitas untuk nomor ini; itu bukan bukti nomor aman."])
-        return {"findings": findings, "checks": checks, "unavailable": unavailable, "limitations": limitations, "confidence": confidence}
+            extend_unique(limitations, ["Tidak ada laporan komunitas untuk nomor ini; itu bukan bukti nomor aman."])
+        return {"findings": findings, "checks": checks, "unavailable": unavailable, "limitations": limitations,
+                "confidence": confidence, "reviews": review_cards(rows)}
 
     async def assess_state(state: PhoneState):
         findings = list(state.get("findings") or [])
         unavailable = list(state.get("unavailable") or [])
         merge_checkpoint_flag(unavailable, state)
+        reviews = list(state.get("reviews") or [])
         report = assess(
             state["scan_id"], "phone", findings,
             list(state.get("checks") or []), unavailable,
             {"model": "", "prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0, "status": "not_used"},
             limitations=list(state.get("limitations") or []),
             confidence=state.get("confidence", "low"),
+            artifacts={"community_reviews": reviews, "community_review_count": len(reviews)},
         )
         if state.get("e164"):
             details = [f"Nomor dinormalisasi ke {state['e164']}"]

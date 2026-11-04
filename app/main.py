@@ -10,15 +10,20 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 
-from . import phone_reports, retention
+from . import phone_evidence, phone_reports, retention
 from .apk_scanner import scan_application
-from .image_scanner import scan_image
 from .logs import configure_logging
 from .metrics import metrics
 from .phone_scanner import normalize_payload, scan_phone
 from .risk import fail_report
-from .scanners import scan_message, scan_url
-from .schemas import JobRequest, PhoneNormalizeRequest, PhoneReportModerationRequest
+from .scanners import scan_url
+from .schemas import (
+    JobRequest,
+    PhoneEvidenceDeleteRequest,
+    PhoneEvidenceRequest,
+    PhoneNormalizeRequest,
+    PhoneReportModerationRequest,
+)
 
 load_dotenv()
 
@@ -99,14 +104,10 @@ async def run_scanner(request: JobRequest) -> Any:
     kind = request.type
     options = request.options or {}
     payload = request.input or {}
-    if kind == "message":
-        return await scan_message(request.scan_id, str(payload.get("text", "")))
     if kind == "url":
         return await scan_url(request.scan_id, str(payload.get("url", "")), request.user_id)
     if kind == "phone":
         return await scan_phone(request.scan_id, str(payload.get("number", "")), str(payload.get("default_region", "ID")))
-    if kind == "image":
-        return await scan_image(request.scan_id, request.user_id, payload, options)
     if kind == "application":
         return await scan_application(request.scan_id, request.user_id, payload, options)
     return fail_report(request.scan_id, kind, "scanner_not_implemented", "Scanner not available in this phase.")
@@ -143,7 +144,6 @@ def capabilities() -> dict[str, Any]:
     return {
         "phonenumbers": installed("phonenumbers"),
         "androguard": installed("androguard"),
-        "ocr": installed("pytesseract") and installed("PIL"),
         "file_worker": bool(os.getenv("FILE_WORKER_URL", "")),
         "langgraph": installed("langgraph"),
         "checkpointer": bool(os.getenv("DATABASE_URL_SESSION", "")),
@@ -153,9 +153,9 @@ def capabilities() -> dict[str, Any]:
         "virustotal": bool(os.getenv("VIRUSTOTAL_API_KEY", "")),
         "exa": bool(os.getenv("EXA_API_KEY", "")),
         "mobsf": bool(os.getenv("MOBSF_URL", "") and os.getenv("MOBSF_API_KEY", "")),
-        "vision": bool(os.getenv("OPENAI_VISION_MODEL", "")),
         "retention": retention.enabled(),
         "phone_reports": bool(os.getenv("SUPABASE_URL", "") and os.getenv("SUPABASE_SECRET_KEY", "")),
+        "phone_evidence": bool(os.getenv("CLOUDINARY_URL", "").strip()),
     }
 
 
@@ -202,6 +202,29 @@ async def moderate_phone_report(report_id: str, request: PhoneReportModerationRe
         raise HTTPException(status_code=404 if detail == "report_not_found" else 503, detail=detail) from error
     metrics.inc("phone_reports_moderated", status=request.status)
     return updated
+
+
+@app.post("/internal/v1/phone-reports/evidence", status_code=201)
+async def store_phone_evidence(request: PhoneEvidenceRequest, x_service_key: str | None = Header(default=None)):
+    """Keep one evidence image and return the reference Go stores next to the report.
+
+    Failure is 503, never an empty URL: since a report is only accepted with its evidence, the
+    caller has to be able to tell "no cloud storage" apart from "this image was rejected".
+    """
+    require_service_key(x_service_key)
+    stored = await phone_evidence.store_image(request.user_id, request.reference, request.mime, request.data_base64)
+    if stored is None:
+        metrics.inc("phone_evidence_rejected")
+        raise HTTPException(status_code=503, detail="evidence_unavailable")
+    metrics.inc("phone_evidence_stored", mime=stored["mime"])
+    return stored
+
+
+@app.delete("/internal/v1/phone-reports/evidence")
+async def discard_phone_evidence(request: PhoneEvidenceDeleteRequest, x_service_key: str | None = Header(default=None)):
+    """Best-effort cleanup of an image whose report could not be stored."""
+    require_service_key(x_service_key)
+    return {"deleted": await phone_evidence.discard(request.public_id)}
 
 
 @app.post("/internal/v1/jobs", status_code=202)

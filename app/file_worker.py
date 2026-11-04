@@ -1,8 +1,8 @@
 """Isolated file-analysis worker (internal only).
 
 Runs in its own container: non-root, no internet network, CPU/memory/pid limits, read-only
-filesystem with a tmpfs for scratch files. It exposes two endpoints:
-``POST /internal/v1/analyze/image`` and ``POST /internal/v1/analyze/application``.
+filesystem with a tmpfs for scratch files. It exposes one endpoint:
+``POST /internal/v1/analyze/application``.
 Request bodies are raw bytes; the response is the extractor result (never a verdict).
 """
 
@@ -15,12 +15,10 @@ from typing import Any
 from fastapi import FastAPI, Header, HTTPException, Request, status
 
 from .apk_extract import ArchiveLimitExceeded, extract_apk_features
-from .image_extract import extract_image_text
 
 MAX_BODY_BYTES = int(os.getenv("WORKER_MAX_BODY_MB", "52")) << 20
 MAX_CONCURRENCY = int(os.getenv("WORKER_MAX_CONCURRENCY", "2"))
 TIMEOUTS = {
-    "image": float(os.getenv("WORKER_IMAGE_TIMEOUT_SECONDS", "45")),
     "application": float(os.getenv("WORKER_APK_TIMEOUT_SECONDS", "150")),
 }
 
@@ -60,10 +58,9 @@ async def read_limited_body(request: Request) -> bytes:
 
 
 async def run_extraction(kind: str, data: bytes) -> dict[str, Any]:
-    extractor = extract_image_text if kind == "image" else extract_apk_features
     async with semaphore:
         try:
-            return await asyncio.wait_for(asyncio.to_thread(extractor, data), timeout=TIMEOUTS[kind])
+            return await asyncio.wait_for(asyncio.to_thread(extract_apk_features, data), timeout=TIMEOUTS[kind])
         except ArchiveLimitExceeded as error:
             return {"available": False, "reason": error.reason, "features": {}, "incomplete_reasons": [error.reason], "details": error.details}
         except asyncio.TimeoutError:
@@ -78,12 +75,6 @@ async def run_extraction(kind: str, data: bytes) -> dict[str, Any]:
 async def health(x_service_key: str | None = Header(default=None)):
     require_worker_key(x_service_key)
     return {"status": "ok", "concurrency": MAX_CONCURRENCY}
-
-
-@app.post("/internal/v1/analyze/image")
-async def analyze_image(request: Request, x_service_key: str | None = Header(default=None)):
-    require_worker_key(x_service_key)
-    return await run_extraction("image", await read_limited_body(request))
 
 
 @app.post("/internal/v1/analyze/application")

@@ -1,8 +1,10 @@
 from typing import Any, Literal
 from pydantic import BaseModel, Field
 
-ScanType = Literal["url", "message", "phone", "image", "application"]
-PhoneRegion = Literal["ID", "MY", "SG", "US", "GB"]
+ScanType = Literal["url", "phone", "application"]
+# Detection scope is Indonesian numbers only; +62 is enforced from the parsed country code,
+# not from this field, so "+1..." submitted with region ID is still rejected.
+PhoneRegion = Literal["ID"]
 ReportStatus = Literal["pending", "verified", "rejected", "rejected_spam"]
 
 class ComponentStatus(BaseModel):
@@ -54,6 +56,23 @@ class PhoneNormalizeRequest(BaseModel):
 
 class PhoneReportModerationRequest(BaseModel):
     status: ReportStatus
+
+
+class PhoneEvidenceRequest(BaseModel):
+    """One evidence image for a community report, handed over by Go as base64.
+
+    Multipart would need a new dependency here; Go already holds the bytes and caps the size,
+    so the body stays JSON and only this module talks to Cloudinary.
+    """
+
+    user_id: str = Field(min_length=36, max_length=36)
+    reference: str = Field(min_length=8, max_length=64)
+    mime: str = Field(min_length=4, max_length=64)
+    data_base64: str = Field(min_length=1, max_length=7_000_000)
+
+
+class PhoneEvidenceDeleteRequest(BaseModel):
+    public_id: str = Field(min_length=1, max_length=512)
 
 class Finding(BaseModel):
     id: str

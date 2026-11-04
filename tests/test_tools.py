@@ -14,7 +14,6 @@ EXPECTED = [
     "analyze_application",
     "lookup_phone",
     "analyze_message",
-    "extract_image_text",
     "search_verification_evidence",
 ]
 
@@ -61,7 +60,7 @@ def test_reputation_tool_rejects_unsafe_or_invalid_urls(url):
 def test_reputation_tool_marks_missing_providers_as_unavailable():
     context = ToolContext(scan_id="scan-1", user_id="user-1", kind="message")
     result = _call("check_url_reputation", {"url": "https://example.test/login"}, context)
-    assert result["checks_unavailable"] == ["safe_browsing", "virustotal"]
+    assert result["checks_unavailable"] == ["ic4", "malwarebytes", "safe_browsing", "virustotal"]
     assert result["findings"] == []
 
 
@@ -71,12 +70,6 @@ def test_file_tools_require_an_allowed_file_id():
     allowed = _call("analyze_application", {"file_id": "scan-1"}, context)
     assert denied["available"] is False
     assert allowed["package_name"] == "com.example"
-
-
-def test_ocr_tool_only_returns_cached_text():
-    context = ToolContext(scan_id="scan-1", user_id="user-1", kind="image", ocr_text="Selamat anda menang", file_ids=["scan-1"])
-    result = _call("extract_image_text", {"file_id": "scan-1"}, context)
-    assert result["text"] == "Selamat anda menang"
 
 
 def test_lookup_phone_validates_region_and_digits(monkeypatch):
@@ -92,6 +85,24 @@ def test_lookup_phone_validates_region_and_digits(monkeypatch):
     assert good["reports"]["verified"] == 1
     assert bad_region["available"] is False
     assert bad_number["available"] is False
+
+
+def test_lookup_phone_refuses_numbers_outside_indonesia(monkeypatch):
+    looked_up: list[str] = []
+
+    async def reports(e164):
+        looked_up.append(e164)
+        return []
+
+    monkeypatch.setattr(tools, "fetch_reports", reports)
+    context = ToolContext(scan_id="scan-1", user_id="user-1", kind="message")
+    # A US number with a well-formed digit count must not be answered with "0 reports", which
+    # reads like a clean verdict for a number the product never checks.
+    result = _call("lookup_phone", {"number": "+12025550123", "default_region": "ID"}, context)
+    assert result["available"] is False
+    assert result["reason"] == "not_indonesian"
+    assert looked_up == []
+    assert [call["allowed"] for call in context.calls] == [False]
 
 
 def test_message_tool_and_exa_tool_degrade_without_keys(monkeypatch):

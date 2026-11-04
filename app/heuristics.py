@@ -1,4 +1,4 @@
-"""Deterministic message indicators shared by the message scanner and the agent tools."""
+"""Deterministic social-engineering terms used by the agent's text-analysis tool."""
 
 SUSPICIOUS_TERMS = (
     "bit.ly",

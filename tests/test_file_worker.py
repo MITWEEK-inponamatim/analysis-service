@@ -27,13 +27,10 @@ def test_worker_refuses_to_start_without_derived_key(monkeypatch):
             pass
 
 
-def test_worker_rejects_unreadable_image(monkeypatch):
+def test_worker_has_no_image_endpoint(monkeypatch):
     client = _client(monkeypatch)
-    response = client.post("/internal/v1/analyze/image", headers={"X-Service-Key": WORKER_KEY}, content=b"definitely not an image")
-    assert response.status_code == 200
-    body = response.json()
-    assert body["available"] is False
-    assert body["reason"] in {"image_unreadable", "pillow_missing", "unsupported_image_format", "tesseract_binary_missing"}
+    response = client.post("/internal/v1/analyze/image", headers={"X-Service-Key": WORKER_KEY}, content=b"PK\x03\x04")
+    assert response.status_code == 404
 
 
 def test_worker_rejects_oversized_payload(monkeypatch):

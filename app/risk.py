@@ -29,14 +29,13 @@ SOURCE_WEIGHT = {
     "url_heuristic": 0.6,
     "heuristic": 0.5,
     "llm_analysis": 0.45,
-    "llm_vision": 0.45,
     "brand_agent": 0.6,
     "behavior_agent": 0.6,
     "phone_validation": 0.4,
 }
 POSITIVE_CHECKS = {
     "safe_browsing", "virustotal", "browser_inspection", "virustotal_hash_lookup",
-    "apk_static_analysis", "ocr", "phone_reports", "mobsf", "dynamic_analysis",
+    "apk_static_analysis", "phone_reports", "mobsf", "dynamic_analysis",
 }
 LEVEL_RANK = {"unknown": 0, "low": 1, "medium": 2, "high": 3}
 CLEAN_EVIDENCE_MIN_CHECKS = 3

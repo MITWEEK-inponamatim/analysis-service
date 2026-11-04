@@ -1,9 +1,9 @@
 """Client for the isolated file-analysis worker.
 
-The API process never parses untrusted APK/image bytes itself when the worker is
+The API process never parses untrusted APK bytes itself when the worker is
 configured: bytes are POSTed to ``analysis-worker`` (no internet, non-root, CPU/memory
-limited). Without ``FILE_WORKER_URL`` (local development, unit tests) the same extractors
-run in-process so behaviour stays observable.
+limited). Without ``FILE_WORKER_URL`` (local development, unit tests) the same extractor
+runs in-process so behaviour stays observable.
 """
 
 import asyncio
@@ -13,9 +13,8 @@ import httpx
 
 from .apk_extract import ArchiveLimitExceeded, extract_apk_features
 from .file_auth import file_service_key
-from .image_extract import extract_image_text
 
-DEFAULT_TIMEOUTS = {"image": 60, "application": 180}
+DEFAULT_TIMEOUTS = {"application": 180}
 
 
 def _timeout(kind: str) -> float:
@@ -25,10 +24,8 @@ def _timeout(kind: str) -> float:
     return float(DEFAULT_TIMEOUTS.get(kind, 90))
 
 
-def _local_extract(kind: str, data: bytes) -> dict:
+def _local_extract(data: bytes) -> dict:
     try:
-        if kind == "image":
-            return extract_image_text(data)
         return extract_apk_features(data)
     except ArchiveLimitExceeded as error:
         return {"available": False, "reason": error.reason, "features": {}, "incomplete_reasons": [error.reason]}
@@ -37,7 +34,7 @@ def _local_extract(kind: str, data: bytes) -> dict:
 
 
 async def analyze_file(kind: str, data: bytes, filename: str = "", mime: str = "") -> dict:
-    """Run OCR/static extraction for one uploaded object.
+    """Run static extraction for one uploaded object.
 
     Returns a dict with at least ``available`` and ``reason``. Never raises: a failed
     extractor becomes ``available: False`` so the report can record it as unavailable
@@ -45,7 +42,7 @@ async def analyze_file(kind: str, data: bytes, filename: str = "", mime: str = "
     """
     base = os.getenv("FILE_WORKER_URL", "").strip().rstrip("/")
     if not base:
-        return await asyncio.to_thread(_local_extract, kind, data)
+        return await asyncio.to_thread(_local_extract, data)
     service_key = os.getenv("SERVICE_API_KEY", "")
     if not service_key:
         return {"available": False, "reason": "worker_key_missing", "features": {}, "incomplete_reasons": ["worker_key_missing"]}

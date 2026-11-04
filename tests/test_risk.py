@@ -1,7 +1,7 @@
 from app.risk import assess, finding
 
 def test_threat_finding_is_high():
-    report = assess("scan", "message", [finding("credential theft", "safe_browsing", "high")], ["safe_browsing"], [])
+    report = assess("scan", "url", [finding("credential theft", "safe_browsing", "high")], ["safe_browsing"], [])
     assert report.outcome == "confirmed_threat"
     assert report.risk["level"] == "high"
 
@@ -11,7 +11,7 @@ def test_no_evidence_is_unknown_not_safe():
     assert report.risk["level"] == "unknown"
 
 def test_high_heuristic_is_not_confirmed_threat():
-    report = assess("scan", "message", [finding("urgent", "heuristic", "high")], ["message_heuristics"], [])
+    report = assess("scan", "url", [finding("urgent", "heuristic", "high")], ["brand_guard"], [])
     assert report.outcome == "suspicious"
     assert report.risk["level"] == "high"
 

@@ -27,9 +27,18 @@ async def inspect_website(url: str, scan_id: str, user_id: str) -> dict:
                 import cloudinary
                 import cloudinary.uploader
                 
-                # Configure Cloudinary from URL
-                cloud_name = os.getenv("CLOUDINARY_CLOUD_NAME", "wbthmsn0")
-                cloudinary.config(cloudinary_url=cloudinary_url, cloud_name=cloud_name)
+                # Configure Cloudinary from URL. The SDK parses CLOUDINARY_URL only when
+                # CLOUDINARY_CLOUD_NAME is absent, and this project sets both, so the key and
+                # secret are read from the URL here; an explicit CLOUDINARY_CLOUD_NAME outranks
+                # the URL host. Without this the upload silently had no api_key at all.
+                from urllib.parse import unquote, urlparse
+
+                parts = urlparse(cloudinary_url)
+                cloudinary.config(
+                    cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME", "").strip() or str(parts.hostname or ""),
+                    api_key=unquote(parts.username or ""),
+                    api_secret=unquote(parts.password or ""),
+                )
                 
                 public_id = f"threatlens/scans/{user_id}/{scan_id}"
                 

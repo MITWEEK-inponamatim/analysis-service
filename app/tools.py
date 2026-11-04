@@ -20,7 +20,7 @@ from .heuristics import MAX_MESSAGE_CHARS, message_terms
 from .phone_scanner import fetch_reports, normalize_number
 
 MAX_TOOL_RESULT_CHARS = 6000
-ALLOWED_PHONE_REGIONS = {"ID", "MY", "SG", "US", "GB"}
+ALLOWED_PHONE_REGIONS = {"ID"}
 DIGITS_ONLY = re.compile(r"\D+")
 
 
@@ -32,7 +32,6 @@ class ToolContext:
     user_id: str
     kind: str
     message: str = ""
-    ocr_text: str = ""
     page: dict[str, Any] | None = None
     features: dict[str, Any] | None = None
     phone: dict[str, Any] | None = None
@@ -57,8 +56,8 @@ class FileIdArgs(BaseModel):
 
 
 class LookupPhoneArgs(BaseModel):
-    number: str = Field(description="Phone number as written by the user, e.g. +6281234567890.")
-    default_region: str = Field(default="ID", description="ISO region used when the number has no country code.")
+    number: str = Field(description="Indonesian phone number as written by the user, e.g. +6281234567890 or 081234567890.")
+    default_region: str = Field(default="ID", description="Ignored except that it must be ID; detection covers Indonesian (+62) numbers only.")
 
 
 class AnalyzeMessageArgs(BaseModel):
@@ -185,11 +184,16 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
     async def lookup_phone(number: str, default_region: str = "ID") -> str:
         region = (default_region or "ID").upper()
         digits = DIGITS_ONLY.sub("", number or "")
-        allowed = region in ALLOWED_PHONE_REGIONS and 7 <= len(digits) <= 15
-        context.record("lookup_phone", {"number": (number or "")[:40], "region": region}, allowed, "" if allowed else "number_invalid")
-        if not allowed:
+        if region not in ALLOWED_PHONE_REGIONS or not 7 <= len(digits) <= 15:
+            context.record("lookup_phone", {"number": (number or "")[:40], "region": region}, False, "number_invalid")
             return _dump({"available": False, "reason": "number_or_region_invalid"})
         parsed = normalize_number(number, region)
+        if not parsed.domestic:
+            # Same scope as the phone graph: a foreign number has no community reports to find,
+            # and "count: 0" would read like a clean verdict for a number we never check.
+            context.record("lookup_phone", {"number": (number or "")[:40], "region": region}, False, "not_indonesian")
+            return _dump({"available": False, "reason": "not_indonesian", "e164": parsed.e164})
+        context.record("lookup_phone", {"number": (number or "")[:40], "region": region}, True, "")
         reports = await fetch_reports(parsed.e164) if parsed.e164 else None
         return _dump({
             "available": True,
@@ -211,15 +215,6 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
             return _dump({"available": False, "reason": "text_too_long"})
         return _dump({"available": True, "terms": message_terms(text), "characters": len(text or "")})
 
-    async def extract_image_text(file_id: str) -> str:
-        allowed = file_id in context.file_ids or file_id == context.scan_id
-        context.record("extract_image_text", {"file_id": file_id[:120]}, allowed, "" if allowed else "file_id_not_allowed")
-        if not allowed:
-            return _dump({"available": False, "reason": "file_id_not_allowed"})
-        if not context.ocr_text:
-            return _dump({"available": False, "reason": "ocr_unavailable"})
-        return _dump({"available": True, "text": context.ocr_text[:4000]})
-
     async def search_verification_evidence(claims: str) -> str:
         allowed = 3 <= len((claims or "").strip()) <= 500
         context.record("search_verification_evidence", {"characters": len(claims or "")}, allowed, "" if allowed else "claims_length_invalid")
@@ -237,8 +232,7 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
         StructuredTool.from_function(coroutine=inspect_forms, name="inspect_forms", description="Return the HTML forms found on the inspected page, including password fields.", args_schema=ScanIdArgs),
         StructuredTool.from_function(coroutine=analyze_application, name="analyze_application", description="Return the static analysis summary of the APK sample in this scan.", args_schema=FileIdArgs),
         StructuredTool.from_function(coroutine=lookup_phone, name="lookup_phone", description="Normalise a phone number and read community reports about it.", args_schema=LookupPhoneArgs),
-        StructuredTool.from_function(coroutine=analyze_message, name="analyze_message", description="Check a message text for deterministic social-engineering indicators.", args_schema=AnalyzeMessageArgs),
-        StructuredTool.from_function(coroutine=extract_image_text, name="extract_image_text", description="Return the OCR text already extracted from the screenshot in this scan.", args_schema=FileIdArgs),
+        StructuredTool.from_function(coroutine=analyze_message, name="analyze_message", description="Check a text for deterministic social-engineering indicators.", args_schema=AnalyzeMessageArgs),
         StructuredTool.from_function(coroutine=search_verification_evidence, name="search_verification_evidence", description="Search the public web for factual claims. Results are unverified evidence, not proof.", args_schema=SearchEvidenceArgs),
     ]
 

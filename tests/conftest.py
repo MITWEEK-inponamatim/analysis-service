@@ -9,7 +9,6 @@ import os
 
 OFFLINE_KEYS = (
     "OPENAI_API_KEY",
-    "OPENAI_VISION_MODEL",
     "SAFE_BROWSING_API_KEY",
     "VIRUSTOTAL_API_KEY",
     "EXA_API_KEY",
