@@ -3,7 +3,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 TMPDIR=/tmp HOME=/tmp MPLCONFIG
 
 # Install jadx for APK decompilation
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    wget unzip openjdk-21-jre-headless \
+    wget unzip openjdk-21-jre-headless libyara-dev \
     && rm -rf /var/lib/apt/lists/*
 
 RUN wget -q https://github.com/skylot/jadx/releases/download/v1.5.0/jadx-1.5.0.zip -O /tmp/jadx.zip \

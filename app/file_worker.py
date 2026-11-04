@@ -15,6 +15,9 @@ from typing import Any
 from fastapi import FastAPI, Header, HTTPException, Request, status
 
 from .apk_extract import ArchiveLimitExceeded, extract_apk_features
+from .apk_signature import verify_signature
+from .virustotal import check_hash, compute_sha256
+from .yara_scanner import scan_decompiled
 
 MAX_BODY_BYTES = int(os.getenv("WORKER_MAX_BODY_MB", "52")) << 20
 MAX_CONCURRENCY = int(os.getenv("WORKER_MAX_CONCURRENCY", "2"))
@@ -125,3 +128,46 @@ async def decompile_apk_endpoint(request: Request, x_service_key: str | None = H
                 "code_index": {},
                 "error": str(e)[:200],
             }
+
+@app.post("/internal/v1/apk/signature")
+async def verify_apk_signature(request: Request, x_service_key: str | None = Header(default=None)):
+    """Verify APK signature and extract certificate info."""
+    require_worker_key(x_service_key)
+    data = await read_limited_body(request)
+    try:
+        result = verify_signature(data)
+        return result
+    except Exception as e:
+        return {"signed": False, "certificates": [], "error": str(e)}
+
+
+@app.post("/internal/v1/apk/virustotal")
+async def check_virustotal(request: Request, x_service_key: str | None = Header(default=None)):
+    """Check APK hash against VirusTotal."""
+    require_worker_key(x_service_key)
+    body = await request.json()
+    sha256 = body.get("sha256", "")
+    api_key = os.getenv("VIRUSTOTAL_API_KEY", "")
+    if not sha256:
+        return {"found": False, "error": "missing_sha256"}
+    try:
+        result = await check_hash(sha256, api_key, timeout=15)
+        return result
+    except Exception as e:
+        return {"found": False, "error": str(e)}
+
+
+@app.post("/internal/v1/apk/yara")
+async def scan_with_yara(request: Request, x_service_key: str | None = Header(default=None)):
+    """Scan APK with YARA rules."""
+    require_worker_key(x_service_key)
+    body = await request.json()
+    apk_bytes = bytes.fromhex(body.get("apk_hex", ""))
+    decompiled = body.get("decompiled", {})
+    if not apk_bytes:
+        return {"matches": [], "total_matches": 0, "families": [], "max_severity": "low", "error": "missing_apk_data"}
+    try:
+        result = scan_decompiled(decompiled, apk_bytes)
+        return result
+    except Exception as e:
+        return {"matches": [], "total_matches": 0, "families": [], "max_severity": "low", "error": str(e)}

@@ -99,3 +99,62 @@ async def decompile_apk_via_worker(data: bytes) -> dict:
             return payload if isinstance(payload, dict) else {}
     except Exception:
         return {}
+
+
+async def verify_apk_signature_via_worker(data: bytes) -> dict:
+    """Call worker to verify APK signature."""
+    base = os.getenv("FILE_WORKER_URL", "").strip().rstrip("/")
+    if not base:
+        from .apk_signature import verify_signature
+        return verify_signature(data)
+    
+    url = f"{base}/internal/v1/apk/signature"
+    headers = {"X-Service-Key": file_service_key()}
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, content=data, headers=headers)
+            if resp.status_code == 200:
+                return resp.json()
+    except Exception:
+        pass
+    return {"signed": False, "certificates": [], "error": "worker_unavailable"}
+
+
+async def check_virustotal_via_worker(sha256: str) -> dict:
+    """Call worker to check VirusTotal."""
+    base = os.getenv("FILE_WORKER_URL", "").strip().rstrip("/")
+    if not base:
+        from .virustotal import check_hash
+        api_key = os.getenv("VIRUSTOTAL_API_KEY", "")
+        return await check_hash(sha256, api_key, timeout=10)
+    
+    url = f"{base}/internal/v1/apk/virustotal"
+    headers = {"X-Service-Key": file_service_key(), "Content-Type": "application/json"}
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(url, json={"sha256": sha256}, headers=headers)
+            if resp.status_code == 200:
+                return resp.json()
+    except Exception:
+        pass
+    return {"found": False, "error": "worker_unavailable"}
+
+
+async def scan_yara_via_worker(apk_bytes: bytes, decompiled: dict) -> dict:
+    """Call worker to scan with YARA."""
+    base = os.getenv("FILE_WORKER_URL", "").strip().rstrip("/")
+    if not base:
+        from .yara_scanner import scan_decompiled
+        return scan_decompiled(decompiled, apk_bytes)
+    
+    url = f"{base}/internal/v1/apk/yara"
+    headers = {"X-Service-Key": file_service_key(), "Content-Type": "application/json"}
+    apk_hex = apk_bytes.hex()
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, json={"apk_hex": apk_hex, "decompiled": decompiled}, headers=headers)
+            if resp.status_code == 200:
+                return resp.json()
+    except Exception:
+        pass
+    return {"matches": [], "total_matches": 0, "families": [], "max_severity": "low", "error": "worker_unavailable"}

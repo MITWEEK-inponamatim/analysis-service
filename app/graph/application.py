@@ -15,7 +15,10 @@ class ApplicationState(TypedDict, total=False):
     digest: str
     consent: bool
     features: dict
-    decompiled: dict  # NEW: jadx decompilation output
+    decompiled: dict  # jadx decompilation output
+    signature: dict  # APK signature verification
+    virustotal: dict  # VirusTotal results
+    yara: dict  # YARA scan results
     findings: list
     checks: list[str]
     unavailable: list[str]
@@ -218,9 +221,11 @@ def build_application_graph(checkpointer=None):
         elif mobsf.available():
             extend_unique(unavailable, ["mobsf"])
             extend_unique(limitations, ["MobSF tidak dipakai karena pengguna tidak menyetujui pengiriman sampel ke layanan eksternal."])
-        else:
+        
+        return {"findings": findings, "checks": checks, "unavailable": unavailable, "limitations": limitations}
+    
     async def jadx_decompile(state: ApplicationState):
-        """NEW: Decompile APK using jadx-cli via file_worker."""
+        """Decompile APK using jadx-cli via file_worker."""
         from ..file_client import decompile_apk_via_worker
         
         data = state.get("data") or b""
@@ -238,6 +243,91 @@ def build_application_graph(checkpointer=None):
             decompiled = {}
         
         return {"decompiled": decompiled, "checks": checks, "unavailable": unavailable}
+        """Verify APK signature and extract certificate info."""
+        from ..file_client import verify_apk_signature_via_worker
+        
+        data = state.get("data") or b""
+        checks = list(state.get("checks") or [])
+        findings = list(state.get("findings") or [])
+        
+        signature = await verify_apk_signature_via_worker(data)
+        
+        if signature.get("signed"):
+            extend_unique(checks, ["signature_verify"])
+            # Flag unsigned or self-signed APKs
+            if not signature.get("certificates"):
+                findings.append(finding("APK tidak ditandatangani (unsigned)", "signature", "high", {}))
+            else:
+                cert = signature["certificates"][0]
+                if cert["subject"] == cert["issuer"]:
+                    findings.append(finding("APK ditandatangani dengan sertifikat self-signed", "signature", "medium", {"issuer": cert["issuer"]}))
+        else:
+            extend_unique(checks, ["signature_verify"])
+            findings.append(finding("APK tidak ditandatangani atau verifikasi signature gagal", "signature", "high", {}))
+        
+        return {"signature": signature, "checks": checks, "findings": findings}
+    
+    async def virustotal_check(state: ApplicationState):
+        """Check APK hash against VirusTotal."""
+        from ..file_client import check_virustotal_via_worker
+        import hashlib
+        
+        data = state.get("data") or b""
+        checks = list(state.get("checks") or [])
+        findings = list(state.get("findings") or [])
+        
+        sha256 = hashlib.sha256(data).hexdigest()
+        vt = await check_virustotal_via_worker(sha256)
+        
+        if vt.get("found"):
+            extend_unique(checks, ["virustotal"])
+            malicious = vt.get("malicious", 0)
+            engines = vt.get("engines", 0)
+            
+            if malicious > 0:
+                severity = "critical" if malicious >= 10 else "high" if malicious >= 5 else "medium"
+                findings.append(finding(
+                    f"VirusTotal mendeteksi APK sebagai malware ({malicious}/{engines} vendor)",
+                    "virustotal",
+                    severity,
+                    {"malicious": malicious, "engines": engines, "families": vt.get("names", [])}
+                ))
+        elif vt.get("error") and vt["error"] != "no_api_key":
+            # VT unavailable but not a config issue
+            pass
+        
+        return {"virustotal": vt, "checks": checks, "findings": findings}
+    
+    async def yara_scan(state: ApplicationState):
+        """Scan APK with YARA rules."""
+        from ..file_client import scan_yara_via_worker
+        
+        data = state.get("data") or b""
+        decompiled = state.get("decompiled") or {}
+        checks = list(state.get("checks") or [])
+        findings = list(state.get("findings") or [])
+        
+        yara_result = await scan_yara_via_worker(data, decompiled)
+        
+        if yara_result.get("total_matches", 0) > 0:
+            extend_unique(checks, ["yara_scan"])
+            families = yara_result.get("families", [])
+            max_severity = yara_result.get("max_severity", "low")
+            
+            findings.append(finding(
+                f"YARA mendeteksi {yara_result['total_matches']} pola malware",
+                "yara",
+                max_severity,
+                {
+                    "matches": yara_result["total_matches"],
+                    "families": families,
+                    "rules": [m["rule"] for m in yara_result.get("matches", [])[:5]]
+                }
+            ))
+        else:
+            extend_unique(checks, ["yara_scan"])
+        
+        return {"yara": yara_result, "checks": checks, "findings": findings}
     
     async def code_pattern_analysis(state: ApplicationState):
         """NEW: Deterministic code pattern rules."""
@@ -390,6 +480,9 @@ def build_application_graph(checkpointer=None):
     graph.add_node("reputation", reputation)
     graph.add_node("static_analysis", static_analysis)
     graph.add_node("jadx_decompile", jadx_decompile)
+    graph.add_node("signature_verify", signature_verify)
+    graph.add_node("virustotal_check", virustotal_check)
+    graph.add_node("yara_scan", yara_scan)
     graph.add_node("code_pattern_analysis", code_pattern_analysis)
     graph.add_node("investigation_gate", investigation_gate_check)
     graph.add_node("run_investigation", run_investigation)
@@ -402,7 +495,10 @@ def build_application_graph(checkpointer=None):
     graph.add_conditional_edges("precheck", after_precheck, {"reputation": "reputation", "assess": "assess"})
     graph.add_edge("reputation", "static_analysis")
     graph.add_edge("static_analysis", "jadx_decompile")
-    graph.add_edge("jadx_decompile", "code_pattern_analysis")
+    graph.add_edge("jadx_decompile", "signature_verify")
+    graph.add_edge("signature_verify", "virustotal_check")
+    graph.add_edge("virustotal_check", "yara_scan")
+    graph.add_edge("yara_scan", "code_pattern_analysis")
     graph.add_edge("code_pattern_analysis", "investigation_gate")
     graph.add_conditional_edges(
         "investigation_gate",
