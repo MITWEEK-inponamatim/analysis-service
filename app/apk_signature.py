@@ -1,6 +1,5 @@
 """APK signature verification using androguard."""
 import hashlib
-from typing import Optional
 from androguard.core.apk import APK
 
 
@@ -28,11 +27,11 @@ def verify_signature(apk_bytes: bytes) -> dict:
         certs = []
         for cert in apk.get_certificates():
             certs.append({
-                "subject": cert.subject.rfc4514_string(),
-                "issuer": cert.issuer.rfc4514_string(),
-                "sha256": hashlib.sha256(cert.public_bytes_raw).hexdigest(),
-                "valid_from": cert.not_valid_before_utc.isoformat(),
-                "valid_to": cert.not_valid_after_utc.isoformat(),
+                "subject": cert.subject.human_friendly,
+                "issuer": cert.issuer.human_friendly,
+                "sha256": hashlib.sha256(cert.dump()).hexdigest(),
+                "valid_from": cert["tbs_certificate"]["validity"]["not_before"].native.isoformat(),
+                "valid_to": cert["tbs_certificate"]["validity"]["not_after"].native.isoformat(),
             })
         
         # Check signature schemes

@@ -147,7 +147,7 @@ async def check_virustotal(request: Request, x_service_key: str | None = Header(
     require_worker_key(x_service_key)
     body = await request.json()
     sha256 = body.get("sha256", "")
-    api_key = os.getenv("VIRUSTOTAL_API_KEY", "")
+    api_key = body.get("api_key", "") or os.getenv("VIRUSTOTAL_API_KEY", "")
     if not sha256:
         return {"found": False, "error": "missing_sha256"}
     try:

@@ -1,5 +1,5 @@
 FROM python:3.12-slim
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 TMPDIR=/tmp HOME=/tmp MPLCONFIGDIR=/tmp/mpl
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 TMPDIR=/tmp HOME=/tmp MPLCONFIGDIR=/tmp/mpl JAVA_TOOL_OPTIONS=-Duser.home=/tmp
 
 # Install jadx for APK decompilation
 RUN apt-get update && apt-get install -y --no-install-recommends \

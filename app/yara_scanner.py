@@ -62,8 +62,9 @@ def scan_decompiled(decompiled: dict, apk_bytes: bytes) -> dict:
             "tags": list(match.tags),
             "meta": dict(match.meta),
             "strings": [
-                {"offset": s.instances[0][0], "identifier": s.identifier, "data": s.instances[0][2]}
+                {"offset": instance.offset, "identifier": s.identifier, "data": instance.matched_data}
                 for s in match.strings
+                for instance in s.instances
             ],
             "matched_classes": [],
         }
@@ -78,8 +79,9 @@ def scan_decompiled(decompiled: dict, apk_bytes: bytes) -> dict:
                     "tags": list(match.tags),
                     "meta": dict(match.meta),
                     "strings": [
-                        {"offset": s.instances[0][0], "identifier": s.identifier, "data": s.instances[0][2]}
+                        {"offset": instance.offset, "identifier": s.identifier, "data": instance.matched_data}
                         for s in match.strings
+                        for instance in s.instances
                     ],
                     "matched_classes": [class_name],
                 }
