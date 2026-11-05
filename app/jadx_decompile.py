@@ -143,14 +143,17 @@ async def decompile_apk(apk_bytes: bytes, timeout: int = 60) -> dict[str, Any]:
                 pass
             raise RuntimeError("jadx timeout")
         
-        # Parse output
-        return _extract_features(output_dir)
+        # JADX ``--no-res`` omits decoded resources; recover package metadata from the APK.
+        return _extract_features(output_dir, apk_bytes)
 
 
-def _extract_features(decompiled_dir: Path) -> dict[str, Any]:
+def _extract_features(decompiled_dir: Path, apk_bytes: bytes = b"") -> dict[str, Any]:
     """Extract features from jadx output directory."""
     
-    manifest = _parse_manifest(decompiled_dir / "resources" / "AndroidManifest.xml")
+    manifest_path = decompiled_dir / "resources" / "AndroidManifest.xml"
+    manifest = _parse_manifest(manifest_path)
+    if not manifest and apk_bytes:
+        manifest = _manifest_from_apk(apk_bytes)
     
     # Find sources directory
     sources_dir = decompiled_dir / "sources"
@@ -177,11 +180,9 @@ def _extract_features(decompiled_dir: Path) -> dict[str, Any]:
     extracted_urls = set()
     key_sources = {}
     code_index = {}
-    
-    # Obfuscation detection: check for single-char class names
     obfuscation_score = 0
-    
-    for file_path in java_files[:200]:  # limit to first 200 files
+
+    for file_path in java_files:
         relative = file_path.relative_to(sources_dir)
         class_name = str(relative.with_suffix("")).replace(os.sep, ".")
         classes.append(class_name)
@@ -246,15 +247,30 @@ def _extract_features(decompiled_dir: Path) -> dict[str, Any]:
     return {
         "manifest": manifest,
         "package_name": manifest.get("package", "unknown"),
-        "classes": classes[:100],  # truncate for response size
+        "classes": classes[:100],
         "native_libs": native_libs,
         "key_sources": key_sources,
-        "code_patterns": {k: v[:5] for k, v in code_patterns.items()},  # max 5 matches per pattern
-        "api_calls": dict(sorted(api_calls.items(), key=lambda x: -x[1])[:20]),  # top 20
+        "code_patterns": {k: v[:5] for k, v in code_patterns.items()},
+        "api_calls": dict(sorted(api_calls.items(), key=lambda x: -x[1])[:20]),
         "extracted_urls": sorted(extracted_urls)[:20],
         "obfuscation_detected": obfuscation_detected,
         "code_index": code_index,
     }
+
+
+def _manifest_from_apk(apk_bytes: bytes) -> dict[str, Any]:
+    """Read package metadata when JADX skipped decoded resources."""
+    try:
+        from androguard.core.apk import APK
+
+        apk = APK(apk_bytes, raw=True)
+        return {
+            "package": apk.get_package() or "unknown",
+            "permissions": sorted(apk.get_permissions() or []),
+            "app_label": apk.get_app_name() or "",
+        }
+    except Exception:
+        return {}
 
 
 def _parse_manifest(manifest_path: Path) -> dict[str, Any]:
