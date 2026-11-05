@@ -62,28 +62,28 @@ async def purge_expired(limit: int = DEFAULT_BATCH, client: httpx.AsyncClient | 
             )
             response.raise_for_status()
             rows = response.json()
-            if not isinstance(rows, list) or not rows:
-                return summary
-            grouped: dict[str, list[str]] = defaultdict(list)
-            for row in rows:
-                grouped[str(row.get("bucket") or "uploads")].append(str(row.get("storage_path") or ""))
-            for bucket, paths in grouped.items():
-                payload = [path for path in paths if path]
-                if not payload:
-                    continue
-                removal = await http.request(
-                    "DELETE",
-                    f"{base}/storage/v1/object/{bucket}",
-                    headers={**headers, "Content-Type": "application/json"},
-                    json={"prefixes": payload},
-                )
-                if removal.status_code < 300:
-                    summary["objects"] += len(payload)
-                else:
-                    summary["storage_failed"] += len(payload)
-                    logger.warning("retention could not delete %d object(s) from %s", len(payload), bucket)
-            deleted_ids = [str(row["id"]) for row in rows]
-            if deleted_ids:
+            if not isinstance(rows, list):
+                raise ValueError("invalid_files_response")
+            if rows:
+                grouped: dict[str, list[str]] = defaultdict(list)
+                for row in rows:
+                    grouped[str(row.get("bucket") or "uploads")].append(str(row.get("storage_path") or ""))
+                for bucket, paths in grouped.items():
+                    payload = [path for path in paths if path]
+                    if not payload:
+                        continue
+                    removal = await http.request(
+                        "DELETE",
+                        f"{base}/storage/v1/object/{bucket}",
+                        headers={**headers, "Content-Type": "application/json"},
+                        json={"prefixes": payload},
+                    )
+                    if removal.status_code < 300:
+                        summary["objects"] += len(payload)
+                    else:
+                        summary["storage_failed"] += len(payload)
+                        logger.warning("retention could not delete %d object(s) from %s", len(payload), bucket)
+                deleted_ids = [str(row["id"]) for row in rows]
                 purge = await http.delete(
                     f"{base}/rest/v1/files",
                     params={"id": f"in.({','.join(deleted_ids)})"},
@@ -92,7 +92,21 @@ async def purge_expired(limit: int = DEFAULT_BATCH, client: httpx.AsyncClient | 
                 if purge.status_code < 300:
                     summary["rows"] = len(deleted_ids)
                 else:
-                    logger.warning("retention could not delete %d row(s)", len(deleted_ids))
+                    logger.warning("retention could not delete %d file row(s)", len(deleted_ids))
+
+            summary["evidence_rows"] = 0
+            for table in ("scan_evidence_items", "scan_evidence"):
+                purge = await http.delete(
+                    f"{base}/rest/v1/{table}",
+                    params={"expires_at": f"lt.{now}", "select": "id"},
+                    headers={**headers, "Prefer": "return=representation"},
+                )
+                if purge.status_code < 300:
+                    deleted = purge.json() if purge.content else []
+                    summary["evidence_rows"] += len(deleted) if isinstance(deleted, list) else 0
+                else:
+                    summary["status"] = "partial"
+                    logger.warning("retention could not purge expired %s rows", table)
         finally:
             if own_client:
                 await http.aclose()

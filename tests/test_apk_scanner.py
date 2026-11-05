@@ -219,7 +219,35 @@ def test_missing_static_analysis_keeps_scan_honest(monkeypatch):
     unavailable = report.risk["coverage"]["checks_unavailable"]
     assert "apk_static_analysis" in unavailable
     assert "jadx_decompile" in unavailable and "dynamic_analysis" in unavailable
-    assert report.outcome == "suspicious"
+    assert "signature_verify" in unavailable
+    assert report.outcome == "insufficient_evidence"
+
+def test_worker_failures_are_not_reported_as_clean_or_unsigned(monkeypatch):
+    payload = {"bucket": "uploads", "storage_path": "user-1/scan-1/sample.apk", "filename": "sample.apk"}
+    _patch_scanner(
+        monkeypatch,
+        {"available": True, "features": {"permissions": [], "sensitive_permissions": []}, "incomplete_reasons": []},
+        malicious=None,
+    )
+
+    async def decompile_failure(_data):
+        return {"error": "worker_unavailable"}
+
+    async def signature_failure(_data):
+        return {"signed": False, "certificates": [], "error": "worker_unavailable"}
+
+    async def yara_failure(_data, _decompiled):
+        return {"matches": [], "total_matches": 0, "families": [], "max_severity": "low", "error": "worker_unavailable"}
+
+    monkeypatch.setattr(file_client, "decompile_apk_via_worker", decompile_failure)
+    monkeypatch.setattr(file_client, "verify_apk_signature_via_worker", signature_failure)
+    monkeypatch.setattr(file_client, "scan_yara_via_worker", yara_failure)
+    report = asyncio.run(apk_scanner.scan_application("scan-1", "user-1", payload))
+
+    unavailable = report.risk["coverage"]["checks_unavailable"]
+    assert {"jadx_decompile", "signature_verify", "yara_scan"} <= set(unavailable)
+    assert not any(f.source in {"signature", "yara"} for f in report.findings)
+    assert report.outcome != "confirmed_threat"
 
 
 def test_archive_rejection_returns_scan_failed(monkeypatch):

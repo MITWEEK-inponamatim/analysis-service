@@ -30,6 +30,11 @@ def test_deletes_expired_objects_and_rows(monkeypatch):
             return httpx.Response(200, json={"message": "ok"})
         if request.method == "DELETE" and request.url.path.endswith("/rest/v1/files"):
             return httpx.Response(204)
+        if request.method == "DELETE" and request.url.path.endswith("/rest/v1/scan_evidence_items"):
+            assert "expires_at" in str(request.url)
+            return httpx.Response(200, json=[{"id": "e1"}, {"id": "e2"}])
+        if request.method == "DELETE" and request.url.path.endswith("/rest/v1/scan_evidence"):
+            return httpx.Response(200, json=[{"scan_id": "s1"}])
         return httpx.Response(404)
 
     async def run():
@@ -41,6 +46,9 @@ def test_deletes_expired_objects_and_rows(monkeypatch):
     assert summary["objects"] == 2
     assert summary["rows"] == 2
     assert summary["storage_failed"] == 0
+    assert summary["evidence_rows"] == 3
+    assert any(path.endswith("/rest/v1/scan_evidence_items") for _, path in seen)
+    assert any(path.endswith("/rest/v1/scan_evidence") for _, path in seen)
     assert any(path.startswith("/storage/v1/object/uploads") for _, path in seen)
     assert any(path.startswith("/storage/v1/object/scan-artifacts") for _, path in seen)
 

@@ -22,6 +22,9 @@ class InvestigationFinding(BaseModel):
     confidence: Confidence = "medium"
     evidence_ids: list[str] = Field(default_factory=list)
     interpretation: str = ""
+    class_name: str | None = None
+    method_name: str | None = None
+    extracted_data: list[str] = Field(default_factory=list)
 
 
 class SkillEnvelope(BaseModel):
@@ -35,6 +38,10 @@ class SkillEnvelope(BaseModel):
     meta: dict[str, Any] = Field(default_factory=dict)
     tool_calls: int = 0
     tokens: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    model: str = ""
+    latency_ms: int = 0
 
 class AgentFinding(BaseModel):
     indicator: str = Field(max_length=500)

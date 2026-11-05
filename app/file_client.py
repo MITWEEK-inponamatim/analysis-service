@@ -67,38 +67,31 @@ async def analyze_file(kind: str, data: bytes, filename: str = "", mime: str = "
 
 
 async def decompile_apk_via_worker(data: bytes) -> dict:
-    """
-    Decompile APK using jadx via file worker.
-    
-    Returns decompiled dict with manifest, classes, code_patterns, etc.
-    Never raises: failed decompilation returns empty dict.
-    """
+    """Decompile APK through the isolated worker; return an error marker on failure."""
     base = os.getenv("FILE_WORKER_URL", "").strip().rstrip("/")
     if not base:
-        # Local fallback: run jadx directly (requires jadx in PATH)
         from .jadx_decompile import decompile_apk
         try:
             return await decompile_apk(data, timeout=60)
-        except Exception:
-            return {}
-    
+        except Exception as error:
+            return {"error": "decompilation_failed", "detail": str(error)[:200]}
+
     service_key = os.getenv("SERVICE_API_KEY", "")
     if not service_key:
-        return {}
-    
+        return {"error": "worker_key_missing"}
+
     headers = {
         "X-Service-Key": file_service_key(service_key),
         "Content-Type": "application/vnd.android.package-archive",
     }
-    
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(70, connect=5)) as client:
             response = await client.post(f"{base}/internal/v1/apk/decompile", headers=headers, content=data)
             response.raise_for_status()
             payload = response.json()
-            return payload if isinstance(payload, dict) else {}
+            return payload if isinstance(payload, dict) else {"error": "invalid_worker_response"}
     except Exception:
-        return {}
+        return {"error": "worker_unavailable"}
 
 
 async def verify_apk_signature_via_worker(data: bytes) -> dict:
@@ -128,20 +121,22 @@ async def check_virustotal_via_worker(sha256: str) -> dict:
 
 
 async def scan_yara_via_worker(apk_bytes: bytes, decompiled: dict) -> dict:
-    """Call worker to scan with YARA."""
+    """Call the isolated YARA scanner; failures remain explicit unavailable results."""
     base = os.getenv("FILE_WORKER_URL", "").strip().rstrip("/")
     if not base:
-        from .yara_scanner import scan_decompiled
-        return scan_decompiled(decompiled, apk_bytes)
-    
+        try:
+            from .yara_scanner import scan_decompiled
+            return scan_decompiled(decompiled, apk_bytes)
+        except Exception as error:
+            return {"matches": [], "total_matches": 0, "families": [], "max_severity": "low", "error": str(error)[:200]}
+
     url = f"{base}/internal/v1/apk/yara"
     headers = {"X-Service-Key": file_service_key(os.getenv("SERVICE_API_KEY", "")), "Content-Type": "application/json"}
-    apk_hex = apk_bytes.hex()
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(url, json={"apk_hex": apk_hex, "decompiled": decompiled}, headers=headers)
-            if resp.status_code == 200:
-                return resp.json()
+            response = await client.post(url, json={"apk_hex": apk_bytes.hex(), "decompiled": decompiled}, headers=headers)
+            response.raise_for_status()
+            payload = response.json()
+            return payload if isinstance(payload, dict) else {"matches": [], "total_matches": 0, "families": [], "max_severity": "low", "error": "invalid_worker_response"}
     except Exception:
-        pass
-    return {"matches": [], "total_matches": 0, "families": [], "max_severity": "low", "error": "worker_unavailable"}
+        return {"matches": [], "total_matches": 0, "families": [], "max_severity": "low", "error": "worker_unavailable"}

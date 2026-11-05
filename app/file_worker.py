@@ -8,6 +8,7 @@ Request bodies are raw bytes; the response is the extractor result (never a verd
 
 import asyncio
 import hmac
+import json
 import os
 from contextlib import asynccontextmanager
 from typing import Any
@@ -20,6 +21,7 @@ from .virustotal import check_hash, compute_sha256
 from .yara_scanner import scan_decompiled
 
 MAX_BODY_BYTES = int(os.getenv("WORKER_MAX_BODY_MB", "52")) << 20
+MAX_JSON_BODY_BYTES = MAX_BODY_BYTES * 2 + (1 << 20)
 MAX_CONCURRENCY = int(os.getenv("WORKER_MAX_CONCURRENCY", "2"))
 TIMEOUTS = {
     "application": float(os.getenv("WORKER_APK_TIMEOUT_SECONDS", "150")),
@@ -46,18 +48,29 @@ def require_worker_key(supplied: str | None) -> None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
 
 
-async def read_limited_body(request: Request) -> bytes:
+async def read_limited_body(request: Request, max_bytes: int | None = None) -> bytes:
+    max_bytes = MAX_BODY_BYTES if max_bytes is None else max_bytes
     declared = request.headers.get("content-length", "")
-    if declared.isdecimal() and int(declared) > MAX_BODY_BYTES:
+    if declared.isdecimal() and int(declared) > max_bytes:
         raise HTTPException(status_code=413, detail="payload_too_large")
     body = bytearray()
     async for chunk in request.stream():
         body.extend(chunk)
-        if len(body) > MAX_BODY_BYTES:
+        if len(body) > max_bytes:
             raise HTTPException(status_code=413, detail="payload_too_large")
     if not body:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="empty_payload")
     return bytes(body)
+
+async def read_limited_json(request: Request, max_bytes: int | None = None) -> dict[str, Any]:
+    max_bytes = MAX_JSON_BODY_BYTES if max_bytes is None else max_bytes
+    try:
+        payload = json.loads((await read_limited_body(request, max_bytes)).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_json") from error
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_json")
+    return payload
 
 
 async def run_extraction(kind: str, data: bytes) -> dict[str, Any]:
@@ -135,17 +148,19 @@ async def verify_apk_signature(request: Request, x_service_key: str | None = Hea
     require_worker_key(x_service_key)
     data = await read_limited_body(request)
     try:
-        result = verify_signature(data)
-        return result
-    except Exception as e:
-        return {"signed": False, "certificates": [], "error": str(e)}
+        async with semaphore:
+            return await asyncio.wait_for(asyncio.to_thread(verify_signature, data), timeout=30)
+    except asyncio.TimeoutError:
+        return {"signed": False, "certificates": [], "error": "signature_timeout"}
+    except Exception as error:
+        return {"signed": False, "certificates": [], "error": str(error)[:200]}
 
 
 @app.post("/internal/v1/apk/virustotal")
 async def check_virustotal(request: Request, x_service_key: str | None = Header(default=None)):
     """Check APK hash against VirusTotal."""
     require_worker_key(x_service_key)
-    body = await request.json()
+    body = await read_limited_json(request)
     sha256 = body.get("sha256", "")
     api_key = body.get("api_key", "") or os.getenv("VIRUSTOTAL_API_KEY", "")
     if not sha256:
@@ -159,15 +174,17 @@ async def check_virustotal(request: Request, x_service_key: str | None = Header(
 
 @app.post("/internal/v1/apk/yara")
 async def scan_with_yara(request: Request, x_service_key: str | None = Header(default=None)):
-    """Scan APK with YARA rules."""
+    """Scan APK bytes and decompiled source with YARA rules."""
     require_worker_key(x_service_key)
-    body = await request.json()
-    apk_bytes = bytes.fromhex(body.get("apk_hex", ""))
-    decompiled = body.get("decompiled", {})
-    if not apk_bytes:
-        return {"matches": [], "total_matches": 0, "families": [], "max_severity": "low", "error": "missing_apk_data"}
+    body = await read_limited_json(request)
     try:
-        result = scan_decompiled(decompiled, apk_bytes)
-        return result
-    except Exception as e:
-        return {"matches": [], "total_matches": 0, "families": [], "max_severity": "low", "error": str(e)}
+        apk_bytes = bytes.fromhex(body.get("apk_hex", ""))
+    except (TypeError, ValueError) as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_apk_data") from error
+    if not apk_bytes:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="missing_apk_data")
+    try:
+        async with semaphore:
+            return await asyncio.to_thread(scan_decompiled, body.get("decompiled", {}), apk_bytes)
+    except Exception as error:
+        return {"matches": [], "total_matches": 0, "families": [], "max_severity": "low", "error": str(error)[:200]}

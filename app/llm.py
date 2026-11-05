@@ -44,3 +44,20 @@ def message_analyzer():
 
 def url_analyzer():
     return message_analyzer()
+
+def token_usage(message) -> dict[str, int]:
+    """Normalize usage metadata across supported LangChain/OpenAI response shapes."""
+    if message is None:
+        return {"prompt_tokens": 0, "completion_tokens": 0}
+    metadata = getattr(message, "usage_metadata", None) or {}
+    if metadata:
+        return {
+            "prompt_tokens": int(metadata.get("input_tokens", metadata.get("prompt_tokens", 0)) or 0),
+            "completion_tokens": int(metadata.get("output_tokens", metadata.get("completion_tokens", 0)) or 0),
+        }
+    response = getattr(message, "response_metadata", None) or {}
+    metadata = response.get("token_usage") or response.get("usage") or {}
+    return {
+        "prompt_tokens": int(metadata.get("prompt_tokens", metadata.get("input_tokens", 0)) or 0),
+        "completion_tokens": int(metadata.get("completion_tokens", metadata.get("output_tokens", 0)) or 0),
+    }
