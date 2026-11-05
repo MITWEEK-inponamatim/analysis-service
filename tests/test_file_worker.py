@@ -39,6 +39,36 @@ def test_worker_rejects_oversized_payload(monkeypatch):
     response = client.post("/internal/v1/analyze/application", headers={"X-Service-Key": WORKER_KEY}, content=b"x" * 64)
     assert response.status_code == 413
 
+def test_worker_rejects_oversized_json_payload(monkeypatch):
+    client = _client(monkeypatch)
+    monkeypatch.setattr(file_worker, "MAX_JSON_BODY_BYTES", 8)
+    response = client.post(
+        "/internal/v1/apk/yara",
+        headers={"X-Service-Key": WORKER_KEY},
+        json={"apk_hex": "00"},
+    )
+    assert response.status_code == 413
+
+def test_worker_rejects_malformed_yara_hex(monkeypatch):
+    client = _client(monkeypatch)
+    response = client.post(
+        "/internal/v1/apk/yara",
+        headers={"X-Service-Key": WORKER_KEY},
+        json={"apk_hex": "not-hex", "decompiled": {}},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "invalid_apk_data"
+
+
+def test_worker_rejects_non_object_json(monkeypatch):
+    client = _client(monkeypatch)
+    response = client.post(
+        "/internal/v1/apk/yara",
+        content=b"[]",
+        headers={"X-Service-Key": WORKER_KEY, "Content-Type": "application/json"},
+    )
+    assert response.status_code == 400
+
 
 def test_worker_reports_invalid_apk_without_crashing(monkeypatch):
     client = _client(monkeypatch)

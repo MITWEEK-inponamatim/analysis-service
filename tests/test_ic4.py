@@ -1,17 +1,15 @@
-import pytest
+import asyncio
 
 from app.ic4 import ic4_lookup
 
 
-@pytest.mark.asyncio
-async def test_ic4_unavailable_when_no_config(monkeypatch):
+def test_ic4_unavailable_when_no_config(monkeypatch):
     monkeypatch.delenv("IC4_API_URL", raising=False)
-    result = await ic4_lookup("http://example.com")
+    result = asyncio.run(ic4_lookup("http://example.com"))
     assert result is None
 
 
-@pytest.mark.asyncio
-async def test_ic4_returns_empty_for_clean_url(monkeypatch):
+def test_ic4_returns_empty_for_clean_url(monkeypatch):
     async def mock_request(_client, _method, _url, **_kwargs):
         class Response:
             def json(self):
@@ -19,12 +17,11 @@ async def test_ic4_returns_empty_for_clean_url(monkeypatch):
         return Response()
 
     monkeypatch.setattr("app.ic4.json_request", mock_request)
-    result = await ic4_lookup("http://example.com")
+    result = asyncio.run(ic4_lookup("http://example.com"))
     assert result == []
 
 
-@pytest.mark.asyncio
-async def test_ic4_returns_finding_for_phishing_url(monkeypatch):
+def test_ic4_returns_finding_for_phishing_url(monkeypatch):
     async def mock_request(_client, _method, _url, **_kwargs):
         class Response:
             def json(self):
@@ -32,7 +29,7 @@ async def test_ic4_returns_finding_for_phishing_url(monkeypatch):
         return Response()
 
     monkeypatch.setattr("app.ic4.json_request", mock_request)
-    result = await ic4_lookup("http://phishing.example")
+    result = asyncio.run(ic4_lookup("http://phishing.example"))
     assert result is not None
     assert len(result) == 1
     assert result[0].source == "ic4"
@@ -40,8 +37,7 @@ async def test_ic4_returns_finding_for_phishing_url(monkeypatch):
     assert "IC4" in result[0].indicator
 
 
-@pytest.mark.asyncio
-async def test_ic4_normalizes_url_without_scheme(monkeypatch):
+def test_ic4_normalizes_url_without_scheme(monkeypatch):
     captured = {}
 
     async def mock_request(_client, _method, url, **kwargs):
@@ -53,25 +49,21 @@ async def test_ic4_normalizes_url_without_scheme(monkeypatch):
         return Response()
 
     monkeypatch.setattr("app.ic4.json_request", mock_request)
-    await ic4_lookup("https://example.com/path?query=1")
-    
-    # IC4 expects domain only
+    asyncio.run(ic4_lookup("https://example.com/path?query=1"))
     assert captured["params"]["q"] == "example.com"
     assert captured["json"]["url"] == "example.com"
 
 
-@pytest.mark.asyncio
-async def test_ic4_handles_api_error_gracefully(monkeypatch):
+def test_ic4_handles_api_error_gracefully(monkeypatch):
     async def mock_request(_client, _method, _url, **_kwargs):
         raise Exception("Network error")
 
     monkeypatch.setattr("app.ic4.json_request", mock_request)
-    result = await ic4_lookup("http://example.com")
+    result = asyncio.run(ic4_lookup("http://example.com"))
     assert result is None
 
 
-@pytest.mark.asyncio
-async def test_ic4_handles_unknown_response_format(monkeypatch):
+def test_ic4_handles_unknown_response_format(monkeypatch):
     async def mock_request(_client, _method, _url, **_kwargs):
         class Response:
             def json(self):
@@ -79,5 +71,5 @@ async def test_ic4_handles_unknown_response_format(monkeypatch):
         return Response()
 
     monkeypatch.setattr("app.ic4.json_request", mock_request)
-    result = await ic4_lookup("http://example.com")
+    result = asyncio.run(ic4_lookup("http://example.com"))
     assert result is None

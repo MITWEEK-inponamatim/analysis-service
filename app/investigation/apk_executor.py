@@ -11,8 +11,8 @@ import json
 import re
 from typing import Any
 
-from .investigation.envelopes import InvestigationFinding, Observation, SkillEnvelope
-from .investigation.evidence import EvidenceStore
+from .envelopes import InvestigationFinding, Observation, SkillEnvelope
+from .evidence import EvidenceStore
 
 
 MAX_SKILL_CALLS = 6

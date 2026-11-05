@@ -234,7 +234,7 @@ def build_application_graph(checkpointer=None):
         
         try:
             decompiled = await decompile_apk_via_worker(data)
-            if decompiled and decompiled.get("package_name"):
+            if decompiled and decompiled.get("package_name") not in (None, "", "unknown") and not decompiled.get("error"):
                 extend_unique(checks, ["jadx_decompile"])
             else:
                 extend_unique(unavailable, ["jadx_decompile"])
@@ -250,8 +250,15 @@ def build_application_graph(checkpointer=None):
         data = state.get("data") or b""
         checks = list(state.get("checks") or [])
         findings = list(state.get("findings") or [])
+        unavailable = list(state.get("unavailable") or [])
+        limitations = list(state.get("limitations") or [])
 
         signature = await verify_apk_signature_via_worker(data)
+        if signature.get("error"):
+            extend_unique(unavailable, ["signature_verify"])
+            extend_unique(limitations, ["Verifikasi signature APK tidak tersedia atau gagal sehingga status signature tidak dapat dipastikan."])
+            return {"signature": signature, "checks": checks, "findings": findings, "unavailable": unavailable, "limitations": limitations}
+
         extend_unique(checks, ["signature_verify"])
         if signature.get("signed"):
             certificates = signature.get("certificates") or []
@@ -272,25 +279,25 @@ def build_application_graph(checkpointer=None):
                 {},
             ))
 
-        return {"signature": signature, "checks": checks, "findings": findings}
+        return {"signature": signature, "checks": checks, "findings": findings, "unavailable": unavailable, "limitations": limitations}
     
     async def virustotal_check(state: ApplicationState):
         """Check APK hash against VirusTotal."""
         from ..file_client import check_virustotal_via_worker
         import hashlib
-        
+
         data = state.get("data") or b""
         checks = list(state.get("checks") or [])
         findings = list(state.get("findings") or [])
-        
+
         sha256 = hashlib.sha256(data).hexdigest()
         vt = await check_virustotal_via_worker(sha256)
-        
+
         if vt.get("found"):
             extend_unique(checks, ["virustotal"])
             malicious = vt.get("malicious", 0)
             engines = vt.get("engines", 0)
-            
+
             if malicious > 0:
                 severity = "critical" if malicious >= 10 else "high" if malicious >= 5 else "medium"
                 findings.append(finding(
@@ -300,27 +307,30 @@ def build_application_graph(checkpointer=None):
                     {"malicious": malicious, "engines": engines, "families": vt.get("names", [])}
                 ))
         elif vt.get("error") and vt["error"] != "no_api_key":
-            # VT unavailable but not a config issue
             pass
-        
+
         return {"virustotal": vt, "checks": checks, "findings": findings}
-    
+
     async def yara_scan(state: ApplicationState):
         """Scan APK with YARA rules."""
         from ..file_client import scan_yara_via_worker
-        
+
         data = state.get("data") or b""
         decompiled = state.get("decompiled") or {}
         checks = list(state.get("checks") or [])
         findings = list(state.get("findings") or [])
-        
+        unavailable = list(state.get("unavailable") or [])
+
         yara_result = await scan_yara_via_worker(data, decompiled)
-        
+        if yara_result.get("error"):
+            extend_unique(unavailable, ["yara_scan"])
+            return {"yara": yara_result, "checks": checks, "findings": findings, "unavailable": unavailable}
+
         if yara_result.get("total_matches", 0) > 0:
             extend_unique(checks, ["yara_scan"])
             families = yara_result.get("families", [])
             max_severity = yara_result.get("max_severity", "low")
-            
+
             findings.append(finding(
                 f"YARA mendeteksi {yara_result['total_matches']} pola malware",
                 "yara",
@@ -333,8 +343,8 @@ def build_application_graph(checkpointer=None):
             ))
         else:
             extend_unique(checks, ["yara_scan"])
-        
-        return {"yara": yara_result, "checks": checks, "findings": findings}
+
+        return {"yara": yara_result, "checks": checks, "findings": findings, "unavailable": unavailable}
     
     async def code_pattern_analysis(state: ApplicationState):
         """NEW: Deterministic code pattern rules."""
