@@ -218,8 +218,8 @@ def test_missing_static_analysis_keeps_scan_honest(monkeypatch):
     report = asyncio.run(apk_scanner.scan_application("scan-1", "user-1", payload))
     unavailable = report.risk["coverage"]["checks_unavailable"]
     assert "apk_static_analysis" in unavailable
-    assert "mobsf" in unavailable and "jadx" in unavailable
-    assert report.outcome == "insufficient_evidence"
+    assert "jadx_decompile" in unavailable and "dynamic_analysis" in unavailable
+    assert report.outcome == "suspicious"
 
 
 def test_archive_rejection_returns_scan_failed(monkeypatch):

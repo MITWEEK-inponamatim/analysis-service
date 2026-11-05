@@ -243,28 +243,35 @@ def build_application_graph(checkpointer=None):
             decompiled = {}
         
         return {"decompiled": decompiled, "checks": checks, "unavailable": unavailable}
+    async def signature_verify(state: ApplicationState):
         """Verify APK signature and extract certificate info."""
         from ..file_client import verify_apk_signature_via_worker
-        
+
         data = state.get("data") or b""
         checks = list(state.get("checks") or [])
         findings = list(state.get("findings") or [])
-        
+
         signature = await verify_apk_signature_via_worker(data)
-        
+        extend_unique(checks, ["signature_verify"])
         if signature.get("signed"):
-            extend_unique(checks, ["signature_verify"])
-            # Flag unsigned or self-signed APKs
-            if not signature.get("certificates"):
+            certificates = signature.get("certificates") or []
+            if not certificates:
                 findings.append(finding("APK tidak ditandatangani (unsigned)", "signature", "high", {}))
-            else:
-                cert = signature["certificates"][0]
-                if cert["subject"] == cert["issuer"]:
-                    findings.append(finding("APK ditandatangani dengan sertifikat self-signed", "signature", "medium", {"issuer": cert["issuer"]}))
+            elif certificates[0]["subject"] == certificates[0]["issuer"]:
+                findings.append(finding(
+                    "APK ditandatangani dengan sertifikat self-signed",
+                    "signature",
+                    "medium",
+                    {"issuer": certificates[0]["issuer"]},
+                ))
         else:
-            extend_unique(checks, ["signature_verify"])
-            findings.append(finding("APK tidak ditandatangani atau verifikasi signature gagal", "signature", "high", {}))
-        
+            findings.append(finding(
+                "APK tidak ditandatangani atau verifikasi signature gagal",
+                "signature",
+                "high",
+                {},
+            ))
+
         return {"signature": signature, "checks": checks, "findings": findings}
     
     async def virustotal_check(state: ApplicationState):
