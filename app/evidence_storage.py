@@ -90,3 +90,21 @@ async def save_evidence_items(scan_id: str, user_id: str, items: list[dict[str, 
         query="?on_conflict=scan_id,evidence_id",
         prefer="resolution=merge-duplicates,return=minimal",
     )
+
+
+async def save_llm_usage(scan_id: str, records: list[dict[str, Any]]) -> bool:
+    """Persist aggregate model-call usage without storing prompts or outputs."""
+    if not records:
+        return True
+    rows = [
+        {
+            "scan_id": scan_id,
+            "model": str(record.get("model") or os.getenv("OPENAI_MODEL", "unknown"))[:200],
+            "prompt_tokens": max(0, int(record.get("prompt_tokens", 0) or 0)),
+            "completion_tokens": max(0, int(record.get("completion_tokens", 0) or 0)),
+            "latency_ms": max(0, int(record.get("latency_ms", 0) or 0)),
+            "status": str(record.get("status") or "unknown")[:40],
+        }
+        for record in records
+    ]
+    return await _post("/rest/v1/llm_usage", rows)

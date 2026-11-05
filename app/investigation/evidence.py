@@ -12,6 +12,7 @@ REDACT_KEYS = {
     "authorization", "cookie", "set-cookie", "password", "passwd", "secret",
     "token", "api_key", "apikey", "access_token", "refresh_token",
 }
+TELEGRAM_BOT_TOKEN = re.compile(r"\d{8,10}:[A-Za-z0-9_-]{35}")
 MAX_STRING = 4000
 MAX_ITEMS = 400
 KIND_RE = re.compile(r"^[a-z][a-z0-9_]{1,24}$")
@@ -31,7 +32,7 @@ def _redact(value: Any) -> Any:
     if isinstance(value, list):
         return [_redact(item) for item in value[:100]]
     if isinstance(value, str):
-        return value[:MAX_STRING]
+        return TELEGRAM_BOT_TOKEN.sub("[REDACTED_TELEGRAM_BOT_TOKEN]", value[:MAX_STRING])
     if isinstance(value, (int, float, bool)) or value is None:
         return value
     return str(value)[:MAX_STRING]
@@ -111,7 +112,13 @@ class EvidenceStore:
         valid, invalid = [], []
         for evidence_id in evidence_ids:
             (valid if evidence_id in self._items else invalid).append(evidence_id)
+
         return valid, invalid
+
+
+    def sanitize(self, payload: Any) -> Any:
+        """Apply evidence redaction and size limits before report/persistence output."""
+        return _redact(payload)
 
     def items(self) -> list[dict[str, Any]]:
         return list(self._items.values())

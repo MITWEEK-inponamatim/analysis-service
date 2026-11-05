@@ -56,19 +56,22 @@ async def run_apk_investigation(
     # Seed evidence store
     store = EvidenceStore(scan_id, user_id)
     
-    # Add deterministic findings
-    for finding in deterministic_findings:
-        store.add(
-            "finding",
-            {
-                "indicator": getattr(finding, "indicator", finding.get("indicator", "")),
-                "severity": getattr(finding, "severity", finding.get("severity", "")),
-                "source": getattr(finding, "source", finding.get("source", "")),
-                "metadata": getattr(finding, "metadata", finding.get("metadata", {})),
-            },
-            skill="deterministic",
-            fact="static_analysis_finding",
-        )
+    for item in deterministic_findings:
+        if isinstance(item, dict):
+            payload = {
+                "indicator": item.get("indicator", ""),
+                "severity": item.get("severity", ""),
+                "source": item.get("source", ""),
+                "metadata": item.get("metadata", {}),
+            }
+        else:
+            payload = {
+                "indicator": getattr(item, "indicator", ""),
+                "severity": getattr(item, "severity", ""),
+                "source": getattr(item, "source", ""),
+                "metadata": getattr(item, "metadata", {}),
+            }
+        store.add("finding", payload, skill="deterministic", fact="static_analysis_finding")
     
     # Add manifest
     manifest = features.get("manifest", {})
@@ -129,54 +132,71 @@ async def run_apk_investigation(
             },
         )
     
-    # Merge findings
     findings = _merge_findings(behavior_result, obfuscation_result)
-    
-    # Collect evidence IDs
-    evidence_ids = list(set(
-        (behavior_result.evidence_ids or []) + (obfuscation_result.evidence_ids or [])
-    ))
-    
-    # Build artifacts
+    evidence_ids = sorted(item["evidence_id"] for item in store.items())
+    usage_records = [
+        {
+            "model": envelope.model,
+            "prompt_tokens": envelope.prompt_tokens,
+            "completion_tokens": envelope.completion_tokens,
+            "latency_ms": envelope.latency_ms,
+            "status": envelope.status,
+        }
+        for envelope in (behavior_result, obfuscation_result)
+        if envelope.model
+    ]
     artifacts = {
         "investigation": {
-            "status": "completed",
+            "status": "completed" if not behavior_result.unavailable and not obfuscation_result.unavailable else "partial",
             "gate_reasons": gate_reasons,
-            "behavior_tool_calls": behavior_result.tool_calls or 0,
-            "obfuscation_tool_calls": obfuscation_result.tool_calls or 0,
-            "evidence_count": len(evidence_ids),
+            "behavior": {"summary": behavior_result.meta.get("summary", ""), "findings": [item.model_dump() for item in behavior_result.findings]},
+            "obfuscation": {"summary": obfuscation_result.meta.get("summary", ""), "level": obfuscation_result.meta.get("obfuscation_level", "unknown"), "findings": [item.model_dump() for item in obfuscation_result.findings]},
+            "behavior_tool_calls": behavior_result.tool_calls,
+            "obfuscation_tool_calls": obfuscation_result.tool_calls,
+            "evidence_count": len(store.items()),
             "evidence_ids": evidence_ids[:50],
         }
     }
-    
-    # Persist evidence items
-    from ..evidence_storage import save_evidence_items
-    
+
+    from ..evidence_storage import save_evidence_items, save_llm_usage
+
     persisted = await save_evidence_items(scan_id, user_id, store.items())
     if not persisted:
         unavailable.append("evidence_items_storage")
         artifacts["investigation"]["evidence_storage"] = "failed"
-    
-    # Convert InvestigationFinding to Finding schema
+    if usage_records and not await save_llm_usage(scan_id, usage_records):
+        unavailable.append("llm_usage_storage")
+        artifacts["investigation"]["usage_storage"] = "failed"
+
     schema_findings = []
-    for inv_finding in findings:
+    for item in findings:
         schema_findings.append(Finding(
-            indicator=inv_finding.indicator,
+            indicator=item.indicator,
             category="malware_behavior",
-            severity=inv_finding.severity,
+            severity=item.severity,
             metadata={
-                "evidence_ids": inv_finding.evidence_ids,
+                "evidence_ids": item.evidence_ids,
                 "source": "agent_investigation",
+                "confidence": item.confidence,
+                "interpretation": item.interpretation,
+                "class_name": item.class_name,
+                "method_name": item.method_name,
+                "extracted_data": item.extracted_data,
             },
             source="agent_investigation",
         ))
-    
-    
+
     return InvestigationResult(
         findings=schema_findings,
         unavailable=unavailable,
         artifacts=artifacts,
-        usage={"tokens": (behavior_result.tokens or 0) + (obfuscation_result.tokens or 0)},
+        usage={
+            "prompt_tokens": behavior_result.prompt_tokens + obfuscation_result.prompt_tokens,
+            "completion_tokens": behavior_result.completion_tokens + obfuscation_result.completion_tokens,
+            "tokens": behavior_result.tokens + obfuscation_result.tokens,
+            "latency_ms": behavior_result.latency_ms + obfuscation_result.latency_ms,
+            "records": usage_records,
+        },
     )
 
 

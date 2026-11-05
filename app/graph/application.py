@@ -25,6 +25,7 @@ class ApplicationState(TypedDict, total=False):
     limitations: list[str]
     artifacts: dict
     usage: dict
+    usage_records: list[dict]
     checkpointer_unavailable: bool
     investigation_enabled: bool  # NEW: gate decision
     gate_reasons: list[str]  # NEW: gate reasons
@@ -102,6 +103,7 @@ def build_application_graph(checkpointer=None):
             "limitations": list(APK_LIMITATIONS),
             "artifacts": {"screenshot_path": None, "redirect_chain": []},
             "usage": {},
+            "usage_records": [],
         }
 
     def after_load(state: ApplicationState):
@@ -395,20 +397,26 @@ def build_application_graph(checkpointer=None):
             gate_reasons=state.get("gate_reasons") or [],
             unavailable=state.get("unavailable") or [],
         )
-        
         findings = list(state.get("findings") or [])
         findings.extend(result.findings)
-        
+
         artifacts = dict(state.get("artifacts") or {})
         artifacts.update(result.artifacts)
-        
+
         usage = dict(state.get("usage") or {})
-        usage["investigation_tokens"] = result.usage.get("tokens", 0)
-        
+        usage["apk_investigation_tokens"] = result.usage.get("tokens", 0)
+        usage["prompt_tokens"] = int(usage.get("prompt_tokens", 0)) + result.usage.get("prompt_tokens", 0)
+        usage["completion_tokens"] = int(usage.get("completion_tokens", 0)) + result.usage.get("completion_tokens", 0)
+        records = list(state.get("usage_records") or []) + result.usage.get("records", [])
+        if result.usage.get("records"):
+            usage["model"] = result.usage["records"][0].get("model") or usage.get("model", "")
+            usage["status"] = "completed" if any(record.get("status") == "completed" for record in result.usage["records"]) else "unavailable"
+            usage["latency_ms"] = int(usage.get("latency_ms", 0)) + result.usage.get("latency_ms", 0)
+            usage["apk_investigation"] = result.usage["records"]
         unavailable = list(state.get("unavailable") or [])
         unavailable.extend(result.unavailable)
+        return {"findings": findings, "artifacts": artifacts, "usage": usage, "usage_records": records, "unavailable": unavailable}
         
-        return {"findings": findings, "artifacts": artifacts, "usage": usage, "unavailable": unavailable}
     
     def after_investigation_gate(state: ApplicationState):
         """Route based on gate decision."""
@@ -456,7 +464,7 @@ def build_application_graph(checkpointer=None):
         findings = list(state.get("findings") or [])
         checks = list(state.get("checks") or [])
         unavailable = list(state.get("unavailable") or [])
-        usage = default_usage()
+        usage = {**default_usage(), **(state.get("usage") or {})}
         context = ToolContext(scan_id=state["scan_id"], user_id=state["user_id"], kind="application", features=features, file_ids=[state["scan_id"]])
         result = await run_agent(context, system_prompt=APK_ANALYSIS_PROMPT, payload=_feature_summary(features))
         if result is None:
@@ -465,11 +473,25 @@ def build_application_graph(checkpointer=None):
             for item in result.findings:
                 findings.append(finding(item.indicator, "llm_analysis", item.severity, confidence=item.confidence))
             extend_unique(unavailable, result.unavailable or [])
-            usage = result.usage
+            result_status = result.usage.get("status", "unavailable")
+            if result_status == "completed" or usage.get("status") != "completed":
+                usage["status"] = result_status
+            usage["model"] = result.usage.get("model", usage.get("model", ""))
+            usage["latency_ms"] = int(usage.get("latency_ms", 0)) + int(result.usage.get("latency_ms", 0))
             if result.usage.get("status") == "completed":
                 extend_unique(checks, ["llm_analysis"])
             if result.tool_calls:
                 extend_unique(checks, ["llm_tool_calls"])
+            usage_record = {
+                "model": result.usage.get("model", ""),
+                "prompt_tokens": result.usage.get("prompt_tokens", 0),
+                "completion_tokens": result.usage.get("completion_tokens", 0),
+                "latency_ms": result.usage.get("latency_ms", 0),
+                "status": result.usage.get("status", "unavailable"),
+            }
+            from ..evidence_storage import save_llm_usage
+            if usage_record["model"] and not await save_llm_usage(state["scan_id"], [usage_record]):
+                extend_unique(unavailable, ["llm_usage_storage"])
         return {"findings": findings, "checks": checks, "unavailable": unavailable, "usage": usage}
 
     async def assess_state(state: ApplicationState):
