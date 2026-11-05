@@ -47,7 +47,7 @@ Commit sequence on the branch:
 
 ## What is STILL MISSING (APK scanner feature gaps)
 
-1. **No live end-to-end report through real Supabase object storage.** The tables exist; persistence is covered by mocked PostgREST tests. A full scan report from a private `uploads` object → `scan_evidence_items` + `llm_usage` → user-facing report has NOT been exercised against a live environment. No live DB rows were written in this work.
+1. **No live end-to-end report through real Supabase object storage.** The tables were confirmed present only by read-only HTTP checks (their DDL is now committed as `202611060008_scan_evidence_items.sql`, pending application); persistence is covered by mocked PostgREST tests. A full scan report from a private `uploads` object → `scan_evidence_items` + `llm_usage` → user-facing report has NOT been exercised against a live environment. No live DB rows were written in this work.
 
 2. **No real OpenAI call exercised.** Token accounting is validated with fake model responses; avoid live token spend unless a real integration test is explicitly required.
 
@@ -57,7 +57,7 @@ Commit sequence on the branch:
 
 5. **MobSF optional and gated on consent.** Not configured by default; reports record it as unavailable.
 
-6. **Supabase RLS for the new writes.** Existing migrations grant service-role insert on evidence tables; `llm_usage` is service-role-only via RLS. Confirm the running deployment has the latest migrations applied (`202611020001_scan_evidence_items.sql`, plus `llm_usage` in `202610300001_initial_schema.sql`).
+6. **Supabase DDL for the evidence tables was never committed.** `202610300001_initial_schema.sql` creates `llm_usage`, but the file referenced here before (`202611020001_scan_evidence_items.sql`) does not exist in `infra/supabase/migrations`. The DDL is now authored as `202611060008_scan_evidence_items.sql` and is idempotent (works whether or not the tables already exist in the project); it still has to be applied in the Supabase SQL Editor by the project owner, then this item can be closed.
 
 7. **Optional product scope (explicitly not done / not requested):**
    - Frontend display of investigation artifacts — **explicitly excluded by user**.
@@ -68,6 +68,11 @@ Commit sequence on the branch:
 
 - Nothing is actively mid-edit; the branch is merged. The only outstanding items are verification/product decisions above.
 - The workspace-level `TODO.md` mirrors this status.
+- **Fixed on 2026-11-06, after this handoff was written:**
+  - `app/investigation/apk_orchestrator.py` built report `Finding` objects without the required `id`/`timestamp`/`confidence` (and passed a non-existent `category` field), so any APK scan whose agents returned at least one finding failed the whole report with `analysis_failed`. It now uses the `finding()` factory from `app/risk.py`, and `tests/test_apk_persistence.py::test_agent_findings_become_valid_report_findings` covers a non-empty envelope.
+  - `app/graph/application.py::static_analysis` computed `features` but never returned it to the graph state, so `code_pattern_analysis`, `investigation_gate_check`, `run_investigation`, `analyze` and `assess_state` all read `{}`. It is returned now.
+  - Evidence DDL committed as migration `202611060008_scan_evidence_items.sql` (see gap 6).
+  - The Linux `venv/` that was committed by `16effde` is untracked (files stay on disk); `.dockerignore` now excludes it too. Re-create it locally with `python -m venv venv && pip install -r requirements.txt`.
 
 ## Guardrails for the next engineer
 

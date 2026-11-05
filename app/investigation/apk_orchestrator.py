@@ -9,6 +9,7 @@ import asyncio
 import re
 from typing import Any
 
+from ..risk import finding
 from ..schemas import Finding
 from .apk_agents import run_behavior_agent, run_obfuscation_agent
 from .apk_executor import APKExecutor
@@ -168,23 +169,23 @@ async def run_apk_investigation(
         unavailable.append("llm_usage_storage")
         artifacts["investigation"]["usage_storage"] = "failed"
 
-    schema_findings = []
-    for item in findings:
-        schema_findings.append(Finding(
-            indicator=item.indicator,
-            category="malware_behavior",
-            severity=item.severity,
-            metadata={
+    schema_findings = [
+        finding(
+            item.indicator,
+            "agent_investigation",
+            item.severity,
+            {
                 "evidence_ids": item.evidence_ids,
-                "source": "agent_investigation",
                 "confidence": item.confidence,
                 "interpretation": item.interpretation,
                 "class_name": item.class_name,
                 "method_name": item.method_name,
                 "extracted_data": item.extracted_data,
             },
-            source="agent_investigation",
-        ))
+            item.confidence,
+        )
+        for item in findings
+    ]
 
     return InvestigationResult(
         findings=schema_findings,

@@ -224,7 +224,7 @@ def build_application_graph(checkpointer=None):
             extend_unique(unavailable, ["mobsf"])
             extend_unique(limitations, ["MobSF tidak dipakai karena pengguna tidak menyetujui pengiriman sampel ke layanan eksternal."])
         
-        return {"findings": findings, "checks": checks, "unavailable": unavailable, "limitations": limitations}
+        return {"findings": findings, "checks": checks, "unavailable": unavailable, "limitations": limitations, "features": features}
     
     async def jadx_decompile(state: ApplicationState):
         """Decompile APK using jadx-cli via file_worker."""

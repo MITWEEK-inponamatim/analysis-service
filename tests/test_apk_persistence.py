@@ -105,3 +105,70 @@ def test_apk_investigation_persists_owned_evidence_and_call_usage(monkeypatch):
     assert len(persisted["evidence"][2]) == 2
     assert len(persisted["usage"][1]) == 2
     assert result.artifacts["investigation"]["behavior"]["summary"] == ""
+
+
+def test_agent_findings_become_valid_report_findings(monkeypatch):
+    """Report findings need id/timestamp/confidence; the envelopes-only fixtures above skipped that path.
+
+    An empty finding list used to be the only shape exercised here, so a broken conversion from
+    InvestigationFinding to Finding surfaced as a whole-scan failure instead of a test failure.
+    """
+    from app.investigation import apk_orchestrator
+    from app.investigation.envelopes import InvestigationFinding, SkillEnvelope
+
+    async def save(*_args, **_kwargs):
+        return True
+
+    async def behavior(*_args):
+        return SkillEnvelope(
+            skill="behavior-agent", status="completed",
+            findings=[
+                InvestigationFinding(
+                    indicator="SmsManager sends a premium SMS",
+                    severity="high", confidence="high",
+                    evidence_ids=["ev_code_flow_aaaaaaaaaaaa"],
+                    interpretation="sendTextMessage is called from SmsSender.fire",
+                    class_name="com.example.SmsSender", method_name="fire",
+                    extracted_data=["smsto:9999"],
+                ),
+                InvestigationFinding(indicator="Cloned operator identity is reused", severity="low"),
+            ],
+        )
+
+    async def obfuscation(*_args):
+        return SkillEnvelope(
+            skill="obfuscation-agent", status="completed",
+            findings=[
+                InvestigationFinding(
+                    indicator="Package names collapsed to single letters",
+                    severity="medium", confidence="low",
+                ),
+                InvestigationFinding(indicator="  cloned operator identity is reused  ", severity="low"),
+            ],
+        )
+
+    monkeypatch.setattr("app.evidence_storage.save_evidence_items", save)
+    monkeypatch.setattr("app.evidence_storage.save_llm_usage", save)
+    monkeypatch.setattr(apk_orchestrator, "run_behavior_agent", behavior)
+    monkeypatch.setattr(apk_orchestrator, "run_obfuscation_agent", obfuscation)
+    result = asyncio.run(apk_orchestrator.run_apk_investigation(
+        scan_id=SCAN,
+        user_id=USER,
+        features={"manifest": {"package": "com.example.junk", "permissions": ["android.permission.SEND_SMS"]}},
+        decompiled={"package_name": "com.example.junk", "classes": ["com.example.SmsSender"], "code_index": {}},
+        deterministic_findings=[],
+        gate_reasons=["test_gate"],
+        unavailable=[],
+    ))
+
+    assert [item.severity for item in result.findings] == ["high", "medium", "low"]
+    for item in result.findings:
+        assert item.id.startswith("agent_investigation:")
+        assert item.source == "agent_investigation"
+        assert item.timestamp
+        assert item.confidence in {"low", "medium", "high"}
+    assert result.findings[0].metadata["evidence_ids"] == ["ev_code_flow_aaaaaaaaaaaa"]
+    assert result.findings[0].metadata["class_name"] == "com.example.SmsSender"
+    assert result.findings[0].metadata["extracted_data"] == ["smsto:9999"]
+    assert result.findings[0].metadata["interpretation"].startswith("sendTextMessage")
+    assert "category" not in result.findings[0].model_dump()

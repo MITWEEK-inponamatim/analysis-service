@@ -3,5 +3,6 @@
 !.env.example
 !.env.browser.example
 .venv/
+venv/
 __pycache__/
 .pytest_cache/
